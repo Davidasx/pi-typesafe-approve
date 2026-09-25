@@ -1,0 +1,44 @@
+{
+  "name": "pi-typesafe-approve",
+  "version": "0.1.0",
+  "description": "Pi extension that auto-approves routine Bash commands with a System One / Jev decision model, and escalates the rest to a human.",
+  "type": "module",
+  "license": "MIT",
+  "private": false,
+  "keywords": [
+    "pi-package",
+    "pi-extension",
+    "pi",
+    "typesafe",
+    "jev",
+    "system-one",
+    "openrouter",
+    "permission",
+    "auto-approve",
+    "bash"
+  ],
+  "files": [
+    "src",
+    "config.example.json",
+    "README.md",
+    "LICENSE"
+  ],
+  "pi": {
+    "extensions": [
+      "./src/index.ts"
+    ]
+  },
+  "scripts": {
+    "typecheck": "tsc --noEmit",
+    "test": "node --test 'test/*.test.ts'",
+    "check": "npm run typecheck && npm run test"
+  },
+  "peerDependencies": {
+    "@earendil-works/pi-coding-agent": "*"
+  },
+  "devDependencies": {
+    "@earendil-works/pi-coding-agent": "^0.87.1",
+    "@types/node": "^26.6.2",
+    "typescript": "^7.0.2"
+  }
+}

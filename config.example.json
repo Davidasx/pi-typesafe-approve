@@ -1,0 +1,46 @@
+{
+  "$comment": [
+    "Example config for pi-typesafe-approve.",
+    "Copy to <agentDir>/extensions/pi-typesafe-approve/config.json — usually",
+    "~/.pi/agent/extensions/pi-typesafe-approve/config.json — and edit.",
+    "Every key is optional; an omitted key takes its default. Keys starting with",
+    "$ are ignored by the loader and exist only as notes.",
+    "",
+    "There are no provider presets. Fill in baseUrl + path + model for YOUR",
+    "deployment. Known values, as of September 2026 (see README for the table):",
+    "  TypeSafe official     https://api.typesafe.ai   /v1/systemone        jev-latest",
+    "  OpenRouter Decisions  https://openrouter.ai     /api/alpha/decisions ~typesafe/jev-latest",
+    "  OpenRouter SystemOne  https://openrouter.ai     /api/v1/systemone    typesafe/jev-1.13",
+    "  OpenJEV               https://api.openjev.sh    /v1/systemone        openjev",
+    "  local relay           your host                 your path            your model",
+    "",
+    "Set 'endpoint' instead of baseUrl+path when the path is unusual.",
+    "'apiKey' accepts a literal, or ${NAME} to read an environment variable.",
+    "Braces are required; a bare $NAME is sent literally, exactly as written.",
+    "",
+    "The rules the model judges against are NOT in this file. They live in",
+    "policy.md next to it, created from a minimal default on first run. Edit it",
+    "there; it supports ${NAME} environment expansion too."
+  ],
+
+  "enabled": true,
+
+  "baseUrl": "https://api.typesafe.ai",
+  "path": "/v1/systemone",
+  "model": "jev-latest",
+  "apiKey": "${TYPESAFE_API_KEY}",
+  "headers": {},
+
+  "timeoutMs": 6000,
+  "cacheSize": 256,
+
+  "thresholds": { "danger": 0.3, "policy": 0.3 },
+  "escalateOnTiers": ["danger"],
+  "minTierConfidence": 0,
+  "action": "escalate",
+  "noUiFallback": "block",
+  "failMode": "open",
+
+  "logDecisions": true,
+  "debug": false
+}
