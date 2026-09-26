@@ -47,12 +47,16 @@ function harness(options: HarnessOptions = {}) {
     notify: (message) => notes.push(message),
   };
 
+  let configReads = 0;
   const gate = createGate({
-    getConfig: () => config,
+    getConfig: () => {
+      configReads += 1;
+      return config;
+    },
     getPolicy: () => "never do bad things",
     getCwd: () => "/work",
-    isConfigured: () => options.configured ?? true,
-    ask: async (request) => {
+    isConfigured: (_config) => options.configured ?? true,
+    ask: async (request, _signal, _config) => {
       calls += 1;
       assert.deepEqual(Object.keys(request.questions), Object.keys(buildQuestions()));
       const answer = options.answer ?? modelAnswer();
@@ -64,6 +68,9 @@ function harness(options: HarnessOptions = {}) {
   return {
     gate,
     ui,
+    get configReads() {
+      return configReads;
+    },
     log,
     notes,
     prompts,
@@ -84,12 +91,6 @@ test("non-bash tools pass straight through", async () => {
 test("an empty command passes through without a model call", async () => {
   const h = harness();
   assert.equal(await h.gate(bash("   "), h.ui), undefined);
-  assert.equal(h.calls, 0);
-});
-
-test("a disabled gate never calls the model", async () => {
-  const h = harness({ config: { enabled: false } });
-  assert.equal(await h.gate(bash("rm -rf /"), h.ui), undefined);
   assert.equal(h.calls, 0);
 });
 
@@ -220,4 +221,37 @@ test("escalationAction refines escalate by UI availability and noUiFallback", ()
     "allow-no-ui",
   );
   assert.equal(escalationAction({ ...base, action: "block" }, { hasUI: false }), "block");
+});
+
+test("the configuration is read once per judged command, and not otherwise", async () => {
+  // Reading it stats the file to notice external edits, so where that happens is
+  // deliberate: after the cheap checks, and exactly once per decision so a change
+  // cannot be half-applied to one command.
+  const h = harness({ answer: modelAnswer({ danger: 0.9 }), confirm: true });
+
+  await h.gate({ toolName: "read", input: { path: "x" } }, h.ui);
+  assert.equal(h.configReads, 0, "a non-bash tool must not read the configuration");
+
+  await h.gate(bash("   "), h.ui);
+  assert.equal(h.configReads, 0, "an empty command must not read the configuration");
+
+  await h.gate(bash("ls"), h.ui);
+  assert.equal(h.configReads, 1, "one judged command reads it once");
+
+  await h.gate(bash("pwd"), h.ui);
+  assert.equal(h.configReads, 2, "and once for the next one");
+
+  // A cached hit is still a judged command, so it reads it too.
+  await h.gate(bash("pwd"), h.ui);
+  assert.equal(h.configReads, 3);
+});
+
+test("a disabled gate reads the configuration, then stops without a model call", async () => {
+  // `enabled` lives in the configuration, so it has to be read; nothing else may
+  // happen, which is what makes a globally installed but switched-off gate free.
+  const h = harness({ config: { enabled: false } });
+  assert.equal(await h.gate(bash("rm -rf /"), h.ui), undefined);
+  assert.equal(h.configReads, 1);
+  assert.equal(h.calls, 0);
+  assert.equal(h.notes.length, 0);
 });

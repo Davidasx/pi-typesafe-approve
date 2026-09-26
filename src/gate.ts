@@ -89,10 +89,18 @@ export interface GateDeps {
   /** The review policy text sent with every request. */
   getPolicy(): string;
   getCwd(): string;
-  /** False when the endpoint, model, or key is unusable: the gate then no-ops. */
-  isConfigured(): boolean;
+  /**
+   * Whether this configuration is usable. Takes the config rather than fetching
+   * it, so one command is judged against one configuration object: the host may
+   * re-read the file on change, and asking twice could straddle a change.
+   */
+  isConfigured(config: ApproveConfig): boolean;
   /** Perform one model request. Implemented by the extension host. */
-  ask(request: { state: StructuredValue; questions: ReturnType<typeof buildQuestions> }, signal?: AbortSignal): Promise<SystemOneResponse>;
+  ask(
+    request: { state: StructuredValue; questions: ReturnType<typeof buildQuestions> },
+    signal: AbortSignal | undefined,
+    config: ApproveConfig,
+  ): Promise<SystemOneResponse>;
   logger: DecisionLogger;
   now?(): number;
 }
@@ -124,16 +132,21 @@ export function createGate(deps: GateDeps) {
   }
 
   return async function gate(event: ToolCallLike, ui: GateUi): Promise<GateResult> {
-    const config = deps.getConfig();
-    if (!config.enabled) return undefined;
+    // The tool and command checks come first so that reading the configuration —
+    // which stats the file to notice changes — only happens for a Bash call that
+    // actually has something to judge.
     if (event.toolName !== "bash") return undefined;
-
     const command = readCommand(event.input);
     if (!command) return undefined;
 
+    // Read the configuration once, and use this one object for the whole
+    // decision, so a change on disk cannot be half-applied to a single command.
+    const config = deps.getConfig();
+    if (!config.enabled) return undefined;
+
     // A globally installed but unconfigured gate is inert: no model calls, no
     // warnings per command. `session_start` says so once per session instead.
-    if (!deps.isConfigured()) {
+    if (!deps.isConfigured(config)) {
       deps.logger.debug("gate.not-configured", { command });
       return undefined;
     }
@@ -176,7 +189,7 @@ export function createGate(deps: GateDeps) {
     let response: SystemOneResponse;
     try {
       deps.logger.debug("gate.request", { cacheKey });
-      response = await deps.ask({ state, questions }, ui.signal);
+      response = await deps.ask({ state, questions }, ui.signal, config);
     } catch (error) {
       const degraded = error instanceof SystemOneError && error.kind === "timeout" ? "timeout" : "error";
       const reason = error instanceof Error ? error.message : String(error);

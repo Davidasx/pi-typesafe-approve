@@ -148,13 +148,16 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     return client;
   }
 
-  const menuState = (): ApproveMenuState => ({
-    config: getConfig(),
-    policy: readPolicy(),
-    paths: { config: file, policy: policyPath(policyContext), log: logPath(agentDir) },
-    configured: isConfigured(getConfig()),
-    configProblem,
-  });
+  const menuState = (): ApproveMenuState => {
+    const config = getConfig();
+    return {
+      config,
+      policy: readPolicy(),
+      paths: { config: file, policy: policyPath(policyContext), log: logPath(agentDir) },
+      configured: isConfigured(config),
+      configProblem,
+    };
+  };
 
   const writePolicyFile = (text: string): void => {
     writeFileSync(policyPath(policyContext), text, { encoding: "utf8", mode: 0o600 });
@@ -191,8 +194,8 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     getConfig,
     getPolicy: () => readPolicy().text,
     getCwd: () => sessionCwd,
-    isConfigured: () => isConfigured(getConfig()),
-    ask: (request, signal) => getClient(getConfig()).ask(request, signal ? { signal } : {}),
+    isConfigured,
+    ask: (request, signal, config) => getClient(config).ask(request, signal ? { signal } : {}),
     logger,
   });
 
