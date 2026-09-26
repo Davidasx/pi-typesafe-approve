@@ -15,6 +15,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
+import { writeFileSync } from "node:fs";
 import { buildQuestions, buildState, decide } from "./classify.ts";
 import {
   apiKeyBareReferenceWarning,
@@ -27,9 +28,11 @@ import {
   resolveEndpoint,
   saveConfig,
 } from "./config.ts";
+import { createApproveMenu, type ApproveMenuState } from "./menu.ts";
+import { runMenu } from "@narumitw/pi-tui-kit";
 import { createGate, type GateUi } from "./gate.ts";
 import { createFileLogger, trimLogFile, type DecisionLogger } from "./log.ts";
-import { loadPolicy, policyPath, type LoadedPolicy } from "./policy.ts";
+import { DEFAULT_POLICY, loadPolicy, policyPath, type LoadedPolicy } from "./policy.ts";
 import { createSystemOneClient, redact, type SystemOneClient } from "./systemone.ts";
 import type { ApproveConfig, LoadedConfig } from "./types.ts";
 
@@ -88,6 +91,47 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     });
     clientCache = { signature, client };
     return client;
+  }
+
+  const menuState = (): ApproveMenuState => ({
+    config: loaded.config,
+    policy,
+    paths: { config: file, policy: policyPath(policyContext), log: logPath(agentDir) },
+    configured: isConfigured(loaded.config),
+  });
+
+  /** Replace the policy file's contents and pick the change up immediately. */
+  const writePolicyFile = (text: string): void => {
+    writeFileSync(policyPath(policyContext), text, { encoding: "utf8", mode: 0o600 });
+    reload();
+  };
+
+  const menuDeps = {
+    getState: menuState,
+    update: (patch: Partial<ApproveConfig>) => persist({ ...loaded.config, ...patch }),
+    reloadFromDisk: () => reload(),
+    writePolicy: writePolicyFile,
+    restoreDefaultPolicy: () => writePolicyFile(DEFAULT_POLICY),
+    connectionReport: () => connectionReport(),
+  };
+
+  /** One line describing whether the endpoint answers. Shared with the menu. */
+  async function connectionReport(): Promise<string> {
+    const config = loaded.config;
+    if (!isConfigured(config)) {
+      return "pi-typesafe-approve: endpoint, model, and API key must all be set.";
+    }
+    try {
+      const client = getClient(config);
+      const started = Date.now();
+      const response = await client.ask({
+        state: buildState("ls -la", sessionCwd, policy.text),
+        questions: buildQuestions(),
+      });
+      return `pi-typesafe-approve: ${response.model ?? config.model} answered OK in ${Date.now() - started} ms (${summarizeUsage(response.usage)}).`;
+    } catch (error) {
+      return `pi-typesafe-approve: ${redact(message(error), resolveApiKeySafe(config))}`;
+    }
   }
 
   const gate = createGate({
@@ -157,12 +201,13 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
         return;
       }
 
-      await openMenu(ctx, {
-        getLoaded: () => loaded,
-        file,
-        persist,
-        policy: () => policy,
-        getClient,
+      await runMenu(ctx, createApproveMenu(menuDeps), {
+        getState: menuState,
+        onUnsupportedMode: (unsupported, mode) =>
+          unsupported.ui.notify(
+            `pi-typesafe-approve: the settings screen needs TUI or RPC mode (this is ${mode}). Use /typesafe-approve status, on, off, policy, or test <command>.`,
+            "info",
+          ),
       });
     },
   });
@@ -170,154 +215,51 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
 
 // ── command flows ──────────────────────────────────────────────────────────
 
-interface MenuDeps {
-  getLoaded(): LoadedConfig;
-  file: string;
-  persist(config: ApproveConfig): void;
-  policy(): LoadedPolicy;
-  getClient(config: ApproveConfig): SystemOneClient;
-}
-
-async function openMenu(ctx: ExtensionCommandContext, deps: MenuDeps): Promise<void> {
-  for (;;) {
-    const loaded = deps.getLoaded();
-    const choice = await ctx.ui.select(
-      `pi-typesafe-approve — ${loaded.config.enabled ? "enabled" : "disabled"}\n${endpointLine(loaded.config)}`,
-      [
-        "Status",
-        loaded.config.enabled ? "Disable" : "Enable",
-        "Set endpoint (base URL)",
-        "Set path",
-        "Set model",
-        "Set API key",
-        "Set danger threshold",
-        "Set principle threshold",
-        "Set action on trigger",
-        "Set failure mode",
-        "Set no-UI fallback",
-        "Test the connection",
-        "Show the policy sent to the model",
-        "Show config file path",
-        "Done",
-      ],
-    );
-    if (choice === undefined || choice === "Done") return;
-
-    /** Prompt for a string field, then persist the trimmed result. */
-    const setText = async (key: "baseUrl" | "path" | "model" | "apiKey", title: string, prefill?: string): Promise<void> => {
-      const value = await ctx.ui.input(title, prefill ?? String(loaded.config[key] ?? ""));
-      if (value === undefined) return;
-      deps.persist({ ...deps.getLoaded().config, [key]: value.trim() });
-    };
-
-    /** Prompt for a 0..1 threshold, rejecting anything else. */
-    const setThreshold = async (key: "danger" | "policy", title: string): Promise<void> => {
-      const current = deps.getLoaded().config.thresholds[key];
-      const value = await ctx.ui.input(title, String(current));
-      if (value === undefined) return;
-      const parsed = Number(value);
-      if (!Number.isFinite(parsed) || parsed < 0 || parsed > 1) {
-        ctx.ui.notify("Threshold must be a number between 0 and 1.", "error");
-        return;
-      }
-      const config = deps.getLoaded().config;
-      deps.persist({ ...config, thresholds: { ...config.thresholds, [key]: parsed } });
-    };
-
-    switch (choice) {
-      case "Status":
-        ctx.ui.notify(statusLine(loaded, deps.policy()), "info");
-        break;
-      case "Disable":
-      case "Enable":
-        deps.persist({ ...loaded.config, enabled: choice === "Enable" });
-        break;
-      case "Set endpoint (base URL)":
-        await setText("baseUrl", "Base URL (e.g. https://api.typesafe.ai)");
-        break;
-      case "Set path":
-        await setText("path", "Request path (e.g. /v1/systemone, /api/alpha/decisions)");
-        break;
-      case "Set model":
-        await setText("model", "Model id (e.g. jev-latest, ~typesafe/jev-latest, typesafe/jev-1.13)");
-        break;
-      case "Set API key":
-        // Never prefill a secret into a dialog: showing it would leak it to the screen.
-        await setText(
-          "apiKey",
-          "API key, or ${TYPESAFE_API_KEY} to read it from the environment",
-          "",
-        );
-        break;
-      case "Set danger threshold":
-        await setThreshold("danger", "Danger threshold 0..1 (lower flags more)");
-        break;
-      case "Set principle threshold":
-        await setThreshold("policy", "Policy-violation threshold 0..1");
-        break;
-      case "Set action on trigger": {
-        const action = await ctx.ui.select("When a command is flagged", ["escalate", "monitor", "block"]);
-        if (action === "escalate" || action === "monitor" || action === "block") {
-          deps.persist({ ...deps.getLoaded().config, action });
-        }
-        break;
-      }
-      case "Set failure mode": {
-        const mode = await ctx.ui.select("When the model is unreachable", ["open", "closed"]);
-        if (mode === "open" || mode === "closed") {
-          deps.persist({ ...deps.getLoaded().config, failMode: mode });
-        }
-        break;
-      }
-      case "Set no-UI fallback": {
-        const fallback = await ctx.ui.select(
-          "When escalating with no UI to ask (print/JSON mode, subagents)",
-          ["block", "allow"],
-        );
-        if (fallback === "block" || fallback === "allow") {
-          deps.persist({ ...deps.getLoaded().config, noUiFallback: fallback });
-        }
-        break;
-      }
-      case "Test the connection":
-        await testConnection(ctx, deps.getLoaded().config, deps.getClient, deps.policy());
-        break;
-      case "Show the policy sent to the model":
-        showPolicy(ctx, deps.policy());
-        break;
-      case "Show config file path":
-        ctx.ui.notify(`pi-typesafe-approve config: ${deps.file}`, "info");
-        break;
-      default:
-        return;
-    }
-  }
-}
-
-
-async function testConnection(
-  ctx: ExtensionCommandContext,
-  config: ApproveConfig,
-  getClient: (config: ApproveConfig) => SystemOneClient,
-  policy: LoadedPolicy,
-): Promise<void> {
-  if (!isConfigured(config)) {
-    ctx.ui.notify("pi-typesafe-approve: endpoint, model, and API key must all be set.", "error");
-    return;
-  }
-  ctx.ui.notify("pi-typesafe-approve: testing the endpoint …", "info");
+/** One line describing the endpoint, for status output and for the menu. */
+function endpointLine(config: ApproveConfig): string {
+  let endpoint = "(no endpoint configured)";
   try {
-    const response = await getClient(config).ask({
-      state: buildState("ls -la", ctx.cwd, policy.text),
-      questions: buildQuestions(),
-    });
-    ctx.ui.notify(
-      `pi-typesafe-approve: ${response.model ?? config.model} answered OK (${summarizeUsage(response.usage)}).`,
-      "info",
-    );
-  } catch (error) {
-    ctx.ui.notify(`pi-typesafe-approve: ${redact(message(error), resolveApiKeySafe(config))}`, "error");
+    endpoint = resolveEndpoint(config);
+  } catch {
+    // Keep the placeholder.
   }
+  return `${endpoint} · model ${config.model || "(unset)"}`;
+}
+
+function statusLine(loaded: LoadedConfig, policy: LoadedPolicy): string {
+  const config = loaded.config;
+  const keyEnv = apiKeyEnvReferences(config.apiKey);
+  return [
+    `enabled=${config.enabled}`,
+    endpointLine(config),
+    `key=${describeKey(config.apiKey, keyEnv)}`,
+    `danger>=${config.thresholds.danger} policy>=${config.thresholds.policy}`,
+    `action=${config.action} noUiFallback=${config.noUiFallback} failMode=${config.failMode}`,
+    `policy=${policy.path}${policy.created ? " (created)" : ""}${policy.fallback ? " (built-in default)" : ""}`,
+    `config=${loaded.path}`,
+  ].join(" · ");
+}
+
+function describeKey(apiKey: string, envReferences: readonly string[]): string {
+  if (!apiKey) return "(unset)";
+  if (envReferences.length > 0) return `\${${envReferences[0]}}`;
+  const warning = apiKeyBareReferenceWarning(apiKey);
+  return warning ? `literal (! ${warning})` : "literal";
+}
+
+/** Print the exact policy text the model receives, with its expansion notes. */
+function showPolicy(ctx: ExtensionCommandContext, loaded: LoadedPolicy): void {
+  const notes: string[] = [`policy file: ${loaded.path}`];
+  if (loaded.created) notes.push("created on first run from the built-in default");
+  if (loaded.fallback) notes.push("unreadable; using the built-in default in memory");
+  if (loaded.unresolved.length > 0) notes.push(`unresolved, left as written: ${loaded.unresolved.join(", ")}`);
+  if (loaded.bare.length > 0) {
+    notes.push(`not expanded, this syntax needs braces: ${loaded.bare.map((n) => `$${n}`).join(", ")}`);
+  }
+  ctx.ui.notify(notes.join(" · "), loaded.fallback ? "warning" : "info");
+
+  const text = loaded.text;
+  ctx.ui.notify(text.length > 4000 ? `${text.slice(0, 4000)}\n…` : text, "info");
 }
 
 async function runManualTest(
@@ -355,30 +297,6 @@ async function runManualTest(
   }
 }
 
-
-/**
- * Show the exact policy text the model receives, plus anything about its
- * expansion the user should know: unresolved `${NAME}` references, and bare
- * `$word` forms that this syntax deliberately does not expand.
- */
-function showPolicy(ctx: ExtensionCommandContext, loaded: LoadedPolicy): void {
-  const notes: string[] = [`policy file: ${loaded.path}`];
-  if (loaded.created) notes.push("created on first run from the built-in default");
-  if (loaded.fallback) notes.push("unreadable; using the built-in default in memory");
-  if (loaded.unresolved.length > 0) {
-    notes.push(`unresolved, left as written: ${loaded.unresolved.join(", ")}`);
-  }
-  if (loaded.bare.length > 0) {
-    notes.push(
-      `not expanded, this syntax needs braces: ${loaded.bare.map((n) => `$${n}`).join(", ")}`,
-    );
-  }
-  ctx.ui.notify(notes.join(" · "), loaded.fallback ? "warning" : "info");
-
-  const text = loaded.text;
-  ctx.ui.notify(text.length > 4000 ? `${text.slice(0, 4000)}\n…` : text, "info");
-}
-
 // ── helpers ────────────────────────────────────────────────────────────────
 
 function toGateUi(ctx: ExtensionContext): GateUi {
@@ -401,42 +319,7 @@ function isConfigured(config: ApproveConfig): boolean {
   }
 }
 
-function endpointLine(config: ApproveConfig): string {
-  let endpoint = "(no endpoint configured)";
-  try {
-    endpoint = resolveEndpoint(config);
-  } catch {
-    // Keep the placeholder.
-  }
-  return `${endpoint} · model ${config.model || "(unset)"}`;
-}
-
-
-/** How the key resolves, and a note when it looks like a variable but is literal. */
-function describeKey(apiKey: string, envReferences: readonly string[]): string {
-  if (!apiKey) return "(unset)";
-  if (envReferences.length > 0) return `\${${envReferences[0]}}`;
-  const warning = apiKeyBareReferenceWarning(apiKey);
-  return warning ? `literal (! ${warning})` : "literal";
-}
-
-function statusLine(loaded: LoadedConfig, policy: LoadedPolicy): string {
-  const config = loaded.config;
-  const keyEnv = apiKeyEnvReferences(config.apiKey);
-  return [
-    `enabled=${config.enabled}`,
-    endpointLine(config),
-    `key=${describeKey(config.apiKey, keyEnv)}`,
-    `danger>=${config.thresholds.danger} policy>=${config.thresholds.policy}`,
-    `action=${config.action} noUiFallback=${config.noUiFallback} failMode=${config.failMode}`,
-    `policy=${policy.path}${policy.created ? " (created)" : ""}${policy.fallback ? " (built-in default)" : ""}`,
-    `config=${loaded.path}`,
-  ].join(" · ");
-}
-
-function summarizeUsage(
-  usage: { input_tokens?: number; cost?: number } | undefined,
-): string {
+function summarizeUsage(usage: { input_tokens?: number; cost?: number } | undefined): string {
   if (!usage) return "no usage reported";
   const parts: string[] = [];
   if (usage.input_tokens !== undefined) parts.push(`${usage.input_tokens} input tokens`);
@@ -452,4 +335,3 @@ function resolveApiKeySafe(config: ApproveConfig): string | undefined {
 function message(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
 }
-

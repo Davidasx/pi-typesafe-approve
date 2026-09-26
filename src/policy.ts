@@ -29,7 +29,7 @@
  * run, and it supports `${NAME}` environment expansion (see `expand.ts`).
  */
 
-import { mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
 import { expandVariables, findBareReferences, findUnresolved } from "./expand.ts";
 
@@ -98,17 +98,18 @@ export function policyPath(context: Pick<PolicyContext, "configDir">): string {
  * Never throws: if the file cannot be read or created, the built-in default is
  * used in memory so a broken policy degrades the gate instead of disabling it.
  */
-/** Write the default policy, creating the directory. Returns false if it could not. */
-function writeDefaultPolicy(path: string): boolean {
+/**
+ * Create the policy file from the default. Returns false if it could not be
+ * created.
+ *
+ * `wx` means create-only, which matters: an *existing* file is never touched, so
+ * a policy the user has emptied or is midway through rewriting is never
+ * clobbered by the default. Only a genuinely absent file is filled in.
+ */
+function createDefaultPolicy(path: string): boolean {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    // `wx` first so a concurrent creator wins; an existing empty file then gets
-    // filled by the plain write below rather than being left blank forever.
-    try {
-      writeFileSync(path, DEFAULT_POLICY, { encoding: "utf8", mode: 0o600, flag: "wx" });
-    } catch {
-      writeFileSync(path, DEFAULT_POLICY, { encoding: "utf8", mode: 0o600 });
-    }
+    writeFileSync(path, DEFAULT_POLICY, { encoding: "utf8", mode: 0o600, flag: "wx" });
     return true;
   } catch {
     return false;
@@ -126,22 +127,14 @@ export function loadPolicy(context: PolicyContext): LoadedPolicy {
   }
 
   let created = false;
-  if (text.trim() === "") {
-    // Either absent, or present but empty. Both mean "no policy yet", and both
-    // deserve a real file on disk the user can read and edit.
-    created = writeDefaultPolicy(path);
-    if (created) {
-      text = DEFAULT_POLICY;
-    } else {
-      // Could not write: re-read (another process may have just created it)
-      // and otherwise use the default in memory only.
-      try {
-        text = readFileSync(path, "utf8");
-      } catch {
-        text = "";
-      }
-    }
+  if (text.trim() === "" && !existsSync(path)) {
+    // Absent, so give the user a real file to read and edit.
+    created = createDefaultPolicy(path);
+    if (created) text = DEFAULT_POLICY;
   }
+  // A file that exists but is empty is left exactly as it is: the default is used
+  // in memory so the reviewer still has rules, and `fallback` tells the caller to
+  // say so. Overwriting it would destroy a policy that is being rewritten.
 
   const fallback = text.trim() === "";
   const source = fallback ? DEFAULT_POLICY : text;

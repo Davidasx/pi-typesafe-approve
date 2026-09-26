@@ -38,15 +38,20 @@ test("an existing policy is used verbatim, not the default", () => {
   assert.equal(loaded.text, "my own rules");
 });
 
-test("an empty file is treated as absent and filled with the default", () => {
+test("an existing but empty file is never overwritten", () => {
   const ctx = context();
   const path = policyPath(ctx);
   mkdirSync(ctx.configDir, { recursive: true });
   writeFileSync(path, "   \n\n");
 
   const loaded = loadPolicy(ctx);
-  assert.equal(loaded.created, true);
+  // The default is used in memory so the reviewer still has rules, and the
+  // caller is told — but the file is left alone, because it may be a policy
+  // someone is midway through rewriting.
+  assert.equal(loaded.created, false);
+  assert.equal(loaded.fallback, true);
   assert.equal(loaded.text, DEFAULT_POLICY.trim());
+  assert.equal(readFileSync(path, "utf8"), "   \n\n");
 });
 
 test("environment references in the policy are expanded", () => {

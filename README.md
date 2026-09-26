@@ -267,12 +267,59 @@ any unresolved reference or habitual bare `$word`.
 
 | Command | Effect |
 |---|---|
-| `/typesafe-approve` | Interactive menu: endpoint, path, model, key, thresholds, action, failure mode, connection test. |
+| `/typesafe-approve` | The settings screen. |
 | `/typesafe-approve status` | One-line status. |
 | `/typesafe-approve path` | Print the config path. |
 | `/typesafe-approve policy` | Print the exact policy text sent to the model, with expansion notes. |
 | `/typesafe-approve on` / `off` | Toggle the gate. |
 | `/typesafe-approve test <command>` | Classify one command and show the raw signals and verdict. |
+
+### The settings screen
+
+Built on [`@narumitw/pi-tui-kit`](https://www.npmjs.com/package/@narumitw/pi-tui-kit),
+the same menu framework the other Pi configuration screens use, so it behaves the
+way you already expect:
+
+```text
+typesafe-approve
+  enabled · configured · key ${OPENROUTER_API_KEY} · danger >= 0.3, policy >= 0.3 …
+  https://openrouter.ai/api/alpha/decisions · model ~typesafe/jev-latest
+
+  Settings     Every option with its current value.
+  Policy       The rules the model judges against.
+  Diagnostics  Test the endpoint, reload from disk, show file paths.
+  Close
+```
+
+`Settings` is one list, not a menu you descend into: **every option is visible at
+once with its current value**. Enumerated options change in place on Enter (the
+action, the no-UI fallback, the failure mode, the log toggles, the tier set);
+everything else opens a single-field editor, and an invalid number is reported
+without leaving the screen. `Policy` shows the exact text the model receives,
+opens it in a full editor, and can restore the built-in default after asking.
+`Diagnostics` runs a real request against the endpoint and reloads from disk.
+
+No screen ever renders the API key: it is shown as `${NAME}` or `literal`, and
+the key editor is deliberately not prefilled, because a prefill would put the
+secret on screen and into the terminal scrollback.
+
+### When changes take effect
+
+| You change | It applies |
+|---|---|
+| anything through `/typesafe-approve` | **immediately**, to the next command |
+| `config.json` or `policy.md` in an editor | on `/reload`, a restart, or the Diagnostics → *Reload config and policy from disk* action |
+
+The interface writes the file and then re-reads it, so a change made in the menu
+is live at once. An edit made outside Pi is *not* picked up on its own, and that
+is deliberate: the config is the gate's whole configuration, so re-reading it on
+every command would mean that catching the file mid-write — a truncated JSON that
+parses to the defaults — would silently turn the check off. Reloading on demand
+keeps that failure mode explicit and in your hands.
+
+One related consequence: `policy.md` is never overwritten once it exists, even if
+you empty it. An empty policy file means the built-in default is used in memory
+and reported as such, rather than your in-progress rewrite being replaced.
 
 ## Architecture
 
@@ -281,6 +328,7 @@ src/
 ├── index.ts        Pi entry: config lifecycle, tool_call wiring, /typesafe-approve
 ├── gate.ts         The tool_call handler: model → cache → action
 ├── systemone.ts    HTTP client, response normalization, secret redaction
+├── menu.ts         the /typesafe-approve settings screen
 ├── policy.ts       the policy file, its minimal default, and its expansion
 ├── expand.ts       ${NAME} expansion, one rule, no escapes
 ├── classify.ts     state + questions construction, thresholds, verdict
@@ -386,7 +434,7 @@ cost stays near zero on the commands you run most.
 ## Tests
 
 ```bash
-npm test          # 68 tests: unit + an end-to-end test against a local stub
+npm test          # 96 tests: unit + an end-to-end test against a local stub
 npm run typecheck
 npm run check     # both
 ```
