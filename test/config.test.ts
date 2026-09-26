@@ -10,6 +10,7 @@ import {
   resolveApiKey,
   resolveEndpoint,
   saveConfig,
+  shouldAdoptConfig,
   validateConfig,
   apiKeyBareReferenceWarning,
 } from "../src/config.ts";
@@ -117,4 +118,68 @@ test("saveConfig round-trips and creates the directory with owner-only permissio
   assert.equal(reloaded.config.baseUrl, "https://example.test");
   assert.equal(reloaded.config.model, "jev-latest");
   assert.ok(readFileSync(file, "utf8").endsWith("\n"));
+});
+
+// ── adopting a config that changed on disk ─────────────────────────────────
+
+test("shouldAdoptConfig refuses a file that does not parse", () => {
+  const current = { ...DEFAULT_CONFIG, baseUrl: "https://a.test", model: "m", apiKey: "k" };
+  const verdict = shouldAdoptConfig({
+    current,
+    currentUsable: true,
+    candidateParsed: false,
+    candidate: DEFAULT_CONFIG,
+    candidateUsable: false,
+  });
+  assert.equal(verdict.adopt, false);
+  assert.match(verdict.reason ?? "", /does not parse/);
+});
+
+test("shouldAdoptConfig adopts a usable configuration", () => {
+  const verdict = shouldAdoptConfig({
+    current: DEFAULT_CONFIG,
+    currentUsable: false,
+    candidateParsed: true,
+    candidate: { ...DEFAULT_CONFIG, baseUrl: "https://b.test", model: "m", apiKey: "k" },
+    candidateUsable: true,
+  });
+  assert.deepEqual(verdict, { adopt: true });
+});
+
+test("shouldAdoptConfig adopts a deliberate disable", () => {
+  const verdict = shouldAdoptConfig({
+    current: { ...DEFAULT_CONFIG, baseUrl: "https://a.test", model: "m", apiKey: "k" },
+    currentUsable: true,
+    candidateParsed: true,
+    candidate: { ...DEFAULT_CONFIG, enabled: false },
+    candidateUsable: false,
+  });
+  assert.deepEqual(verdict, { adopt: true });
+});
+
+test("shouldAdoptConfig adopts anything while nothing is configured yet", () => {
+  // Setting the extension up: there is no working configuration to protect, so a
+  // half-finished file must not be treated as a reason to refuse everything.
+  const verdict = shouldAdoptConfig({
+    current: DEFAULT_CONFIG,
+    currentUsable: false,
+    candidateParsed: true,
+    candidate: { ...DEFAULT_CONFIG, baseUrl: "https://c.test" },
+    candidateUsable: false,
+  });
+  assert.deepEqual(verdict, { adopt: true });
+});
+
+test("shouldAdoptConfig refuses to trade a working config for an unusable one", () => {
+  // The case that matters: a half-written file parses to the defaults, and the
+  // defaults leave the checker inert. Keeping the working one fails safe.
+  const verdict = shouldAdoptConfig({
+    current: { ...DEFAULT_CONFIG, baseUrl: "https://a.test", model: "m", apiKey: "k" },
+    currentUsable: true,
+    candidateParsed: true,
+    candidate: DEFAULT_CONFIG,
+    candidateUsable: false,
+  });
+  assert.equal(verdict.adopt, false);
+  assert.match(verdict.reason ?? "", /kept/);
 });

@@ -20,12 +20,22 @@ differ in endpoint path and model id, and those details move.
 ## Install
 
 ```bash
-pi install ./            # from this directory
-# or try it for one invocation without installing:
-pi -e ./
+pi install git:github.com/Davidasx/pi-typesafe-approve
 ```
 
 Then run `/typesafe-approve` to set the endpoint, model, and API key.
+
+For development, a local checkout is loaded in place instead, so an edit is live
+after `/reload` with no commit in between:
+
+```bash
+pi -e ./                 # try one checkout for a single invocation
+pi install /path/to/pi-typesafe-approve
+```
+
+A git source is cloned and pinned, so it updates when you ask it to; a local path
+is read from wherever it lives, so what you run is your working tree, uncommitted
+changes included.
 
 ## Configuration
 
@@ -305,21 +315,44 @@ secret on screen and into the terminal scrollback.
 
 ### When changes take effect
 
+Everything applies by itself; there is no reload step.
+
 | You change | It applies |
 |---|---|
-| anything through `/typesafe-approve` | **immediately**, to the next command |
-| `config.json` or `policy.md` in an editor | on `/reload`, a restart, or the Diagnostics → *Reload config and policy from disk* action |
+| anything through `/typesafe-approve` | immediately, to the next command |
+| `policy.md` in an editor | immediately, to the next command |
+| `config.json` in an editor | when the gate next runs, or when the settings screen re-renders |
 
-The interface writes the file and then re-reads it, so a change made in the menu
-is live at once. An edit made outside Pi is *not* picked up on its own, and that
-is deliberate: the config is the gate's whole configuration, so re-reading it on
-every command would mean that catching the file mid-write — a truncated JSON that
-parses to the defaults — would silently turn the check off. Reloading on demand
-keeps that failure mode explicit and in your hands.
+The two files are handled differently on purpose, because they can fail
+differently.
+
+**The policy is never cached.** It is a few KB read once per command, next to a
+network round trip, so the read is free by comparison — and not caching it means
+an edit is live at the next command with no watching, no mtime check, and no way
+to be stale. A policy caught mid-write resolves to the built-in default for that
+one command, and the file is never written to, so nothing is lost either way.
+
+**The configuration is re-read when it changes**, detected with one `stat` per
+command rather than a file watcher: that cannot miss an event, and it needs no
+polling fallback, no debounce, and no cleanup on shutdown. What a re-read must
+never do is quietly disarm the checker, so adoption is guarded:
+
+- a file that does not parse is refused — a half-written file is the common case,
+  and a truncated JSON body parses as nothing;
+- a usable configuration is always adopted;
+- an unusable one is adopted when that is what you asked for (`enabled: false`),
+  or when nothing is being lost because the running configuration was unusable
+  too, which is normal while setting the extension up;
+- otherwise the working configuration is kept and the settings screen says why.
+
+The asymmetry is deliberate: the cheaper mistake is "your edit was ignored for a
+moment", not "the check silently stopped running". An edit made *through* the
+settings screen bypasses all of this and is adopted unconditionally, because it is
+a deliberate action and must always take effect.
 
 One related consequence: `policy.md` is never overwritten once it exists, even if
-you empty it. An empty policy file means the built-in default is used in memory
-and reported as such, rather than your in-progress rewrite being replaced.
+you empty it. An empty policy file means the built-in default is used and reported,
+rather than your in-progress rewrite being replaced.
 
 ## Architecture
 
@@ -329,7 +362,7 @@ src/
 ├── gate.ts         The tool_call handler: model → cache → action
 ├── systemone.ts    HTTP client, response normalization, secret redaction
 ├── menu.ts         the /typesafe-approve settings screen
-├── policy.ts       the policy file, its minimal default, and its expansion
+├── policy.ts       the policy file, its minimal default, and its expansion (read per request)
 ├── expand.ts       ${NAME} expansion, one rule, no escapes
 ├── classify.ts     state + questions construction, thresholds, verdict
 ├── config.ts       config schema, load/save, $ENV resolution, endpoint building
@@ -434,7 +467,7 @@ cost stays near zero on the commands you run most.
 ## Tests
 
 ```bash
-npm test          # 96 tests: unit + an end-to-end test against a local stub
+npm test          # 101 tests: unit + an end-to-end test against a local stub
 npm run typecheck
 npm run check     # both
 ```

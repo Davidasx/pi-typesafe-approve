@@ -282,6 +282,44 @@ export function apiKeyBareReferenceWarning(value: string): string | undefined {
 }
 
 /** Build the request endpoint from config. Throws when nothing is configured. */
+/**
+ * Whether a config that was re-read from disk may replace the one in memory.
+ *
+ * The gate re-reads `config.json` when it changes, so an edit made in an editor
+ * applies without a reload. That is safe only if a *partial* read cannot quietly
+ * disarm the checker, so adoption is guarded:
+ *
+ * - a file that does not parse is refused, because a half-written file is the
+ *   common case and a truncated JSON body parses as nothing;
+ * - a usable configuration is always adopted;
+ * - an unusable one is adopted when the user asked for that (`enabled: false`),
+ *   or when nothing is being lost (the running configuration was unusable too,
+ *   which is the normal state while setting the extension up);
+ * - otherwise the working configuration is kept and the caller reports why.
+ *
+ * The asymmetry is deliberate. For a security check the cheaper mistake is
+ * "ignored your edit for a moment", not "silently stopped checking".
+ */
+export function shouldAdoptConfig(input: {
+  current: ApproveConfig;
+  currentUsable: boolean;
+  candidateParsed: boolean;
+  candidate: ApproveConfig;
+  candidateUsable: boolean;
+}): { adopt: boolean; reason?: string } {
+  if (!input.candidateParsed) {
+    return { adopt: false, reason: "the file does not parse as a JSON object" };
+  }
+  if (input.candidateUsable) return { adopt: true };
+  if (!input.candidate.enabled) return { adopt: true };
+  if (!input.currentUsable) return { adopt: true };
+  return {
+    adopt: false,
+    reason:
+      "it parses but leaves the endpoint, model, or API key unusable, so the working configuration is kept",
+  };
+}
+
 export function resolveEndpoint(config: ApproveConfig): string {
   if (config.endpoint && config.endpoint.trim()) {
     return config.endpoint.trim();

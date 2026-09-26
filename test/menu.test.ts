@@ -46,7 +46,6 @@ interface Harness {
   updates: Array<Partial<ApproveConfig>>;
   policies: string[];
   restores: number;
-  reloads: number;
   notices: Array<{ message: string; kind?: string }>;
   current: ApproveMenuState;
   ctx: { ui: Record<string, unknown>; mode: string; hasUI: boolean };
@@ -61,7 +60,6 @@ function harness(overrides: Partial<ApproveConfig> = {}, options: {
   h.updates = [];
   h.policies = [];
   h.restores = 0;
-  h.reloads = 0;
   h.notices = [];
   h.current = state(overrides);
 
@@ -81,9 +79,6 @@ function harness(overrides: Partial<ApproveConfig> = {}, options: {
     update: (patch) => {
       h.updates?.push(patch);
       h.current = { ...(h.current as ApproveMenuState), config: { ...(h.current as ApproveMenuState).config, ...patch } };
-    },
-    reloadFromDisk: () => {
-      h.reloads = (h.reloads ?? 0) + 1;
     },
     writePolicy: (text) => h.policies?.push(text),
     restoreDefaultPolicy: () => {
@@ -325,10 +320,11 @@ test("the policy screen reports unresolved and brace-less references", () => {
 
 // ── diagnostics ────────────────────────────────────────────────────────────
 
-test("reload-from-disk reaches the dependency", async () => {
+test("the main screen surfaces a refused config change", () => {
   const h = harness();
-  await h.run("reload-from-disk");
-  assert.equal(h.reloads, 1);
+  assert.ok(!(screen(h, "main") as unknown as { lines: string[] }).lines.join("\n").includes("not adopted"));
+  h.current = { ...h.current, configProblem: "/x/config.json changed but was not adopted: it does not parse" };
+  assert.match((screen(h, "main") as unknown as { lines: string[] }).lines.join("\n"), /not adopted/);
 });
 
 test("the status lines describe rather than dump", () => {

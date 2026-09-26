@@ -15,7 +15,7 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { writeFileSync } from "node:fs";
+import { statSync, writeFileSync } from "node:fs";
 import { buildQuestions, buildState, decide } from "./classify.ts";
 import {
   apiKeyBareReferenceWarning,
@@ -27,6 +27,7 @@ import {
   resolveApiKey,
   resolveEndpoint,
   saveConfig,
+  shouldAdoptConfig,
 } from "./config.ts";
 import { createApproveMenu, type ApproveMenuState } from "./menu.ts";
 import { runMenu } from "@narumitw/pi-tui-kit";
@@ -46,24 +47,78 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
   const logger: DecisionLogger = createFileLogger(logPath(agentDir), () => loaded.config.debug);
   let clientCache: { signature: string; client: SystemOneClient } | undefined;
 
-  const getConfig = (): ApproveConfig => loaded.config;
-
   const policyContext = {
     configDir: configDir(agentDir),
     env: process.env,
   };
-  let policy: LoadedPolicy = loadPolicy(policyContext);
 
-  /** Re-read the config file and the policy file. */
-  function reload(cwd?: string): void {
-    loaded = loadConfig(file);
-    sessionCwd = cwd ?? sessionCwd;
-    policy = loadPolicy(policyContext);
+  /**
+   * The policy is read when it is needed and never cached.
+   *
+   * It is a few KB, read once per command, next to a network round trip — the read
+   * is free by comparison, and not caching it means a policy edit is live at the
+   * next command with no watching, no mtime checks, and no way to be stale. The
+   * worst case of catching the file mid-write is that one command is judged by the
+   * built-in default, and the file is never written to, so nothing is lost.
+   */
+  const readPolicy = (): LoadedPolicy => loadPolicy(policyContext);
+
+  /**
+   * An identity for the config file, so a change made outside Pi can be noticed.
+   *
+   * Cheap enough to check on every command (one `stat`), and unlike a watcher it
+   * cannot miss an event or need a polling fallback or cleanup.
+   */
+  function configStamp(): string {
+    try {
+      const stat = statSync(file);
+      return `${stat.mtimeMs}:${stat.size}`;
+    } catch {
+      return "(absent)";
+    }
+  }
+  let configStampNow = configStamp();
+  /** Set when a re-read config was refused; surfaced once by the caller. */
+  let configProblem: string | undefined;
+
+  /**
+   * The live configuration, re-reading the file when it has changed.
+   *
+   * External edits are adopted only when that cannot disarm the checker — see
+   * {@link shouldAdoptConfig}. Edits made through the interface go through
+   * {@link persist} instead, which adopts unconditionally because a deliberate
+   * change from the settings screen must always take effect.
+   */
+  function getConfig(): ApproveConfig {
+    const stamp = configStamp();
+    if (stamp === configStampNow) return loaded.config;
+
+    const candidate = loadConfig(file);
+    const verdict = shouldAdoptConfig({
+      current: loaded.config,
+      currentUsable: isConfigured(loaded.config),
+      candidateParsed: candidate.ok,
+      candidate: candidate.config,
+      candidateUsable: isConfigured(candidate.config),
+    });
+    if (verdict.adopt) {
+      loaded = candidate;
+      configProblem = undefined;
+      logger.debug("config.reloaded", { path: file });
+    } else {
+      configProblem = `${file} changed but was not adopted: ${verdict.reason}`;
+      logger.debug("config.refused", { path: file, reason: verdict.reason });
+    }
+    configStampNow = stamp;
+    return loaded.config;
   }
 
+  /** Config written by this extension: always adopted, because the user meant it. */
   function persist(config: ApproveConfig): void {
     saveConfig(file, config);
-    reload();
+    loaded = { ok: true, config, path: file };
+    configProblem = undefined;
+    configStampNow = configStamp();
     clientCache = undefined;
   }
 
@@ -94,22 +149,20 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
   }
 
   const menuState = (): ApproveMenuState => ({
-    config: loaded.config,
-    policy,
+    config: getConfig(),
+    policy: readPolicy(),
     paths: { config: file, policy: policyPath(policyContext), log: logPath(agentDir) },
-    configured: isConfigured(loaded.config),
+    configured: isConfigured(getConfig()),
+    configProblem,
   });
 
-  /** Replace the policy file's contents and pick the change up immediately. */
   const writePolicyFile = (text: string): void => {
     writeFileSync(policyPath(policyContext), text, { encoding: "utf8", mode: 0o600 });
-    reload();
   };
 
   const menuDeps = {
     getState: menuState,
-    update: (patch: Partial<ApproveConfig>) => persist({ ...loaded.config, ...patch }),
-    reloadFromDisk: () => reload(),
+    update: (patch: Partial<ApproveConfig>) => persist({ ...getConfig(), ...patch }),
     writePolicy: writePolicyFile,
     restoreDefaultPolicy: () => writePolicyFile(DEFAULT_POLICY),
     connectionReport: () => connectionReport(),
@@ -117,7 +170,7 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
 
   /** One line describing whether the endpoint answers. Shared with the menu. */
   async function connectionReport(): Promise<string> {
-    const config = loaded.config;
+    const config = getConfig();
     if (!isConfigured(config)) {
       return "pi-typesafe-approve: endpoint, model, and API key must all be set.";
     }
@@ -125,7 +178,7 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
       const client = getClient(config);
       const started = Date.now();
       const response = await client.ask({
-        state: buildState("ls -la", sessionCwd, policy.text),
+        state: buildState("ls -la", sessionCwd, readPolicy().text),
         questions: buildQuestions(),
       });
       return `pi-typesafe-approve: ${response.model ?? config.model} answered OK in ${Date.now() - started} ms (${summarizeUsage(response.usage)}).`;
@@ -136,9 +189,9 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
 
   const gate = createGate({
     getConfig,
-    getPolicy: () => policy.text,
+    getPolicy: () => readPolicy().text,
     getCwd: () => sessionCwd,
-    isConfigured: () => isConfigured(loaded.config),
+    isConfigured: () => isConfigured(getConfig()),
     ask: (request, signal) => getClient(getConfig()).ask(request, signal ? { signal } : {}),
     logger,
   });
@@ -146,11 +199,12 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
   // ── lifecycle ────────────────────────────────────────────────────────────
 
   pi.on("session_start", (_event, ctx) => {
-    reload(ctx.cwd);
+    sessionCwd = ctx.cwd;
     // Trim on startup too, so an oversized log is handled even in a session that
     // runs no shell commands.
     trimLogFile(logPath(agentDir));
-    logger.debug("session.start", { configPath: file, policyPath: policy.path, policyCreated: policy.created });
+    const started = readPolicy();
+    logger.debug("session.start", { configPath: file, policyPath: started.path, policyCreated: started.created });
 
     if (!loaded.ok) {
       ctx.ui.notify(
@@ -177,11 +231,11 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
       const trimmed = args.trim();
 
       if (trimmed === "policy") {
-        showPolicy(ctx, policy);
+        showPolicy(ctx, readPolicy());
         return;
       }
       if (trimmed === "status" || trimmed === "path") {
-        ctx.ui.notify(statusLine(loaded, policy), "info");
+        ctx.ui.notify(statusLine(getConfig(), readPolicy(), file), "info");
         if (trimmed === "path") ctx.ui.notify(`pi-typesafe-approve config: ${file}`, "info");
         return;
       }
@@ -196,7 +250,7 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
           getConfig,
           getClient,
           cwd: () => sessionCwd,
-          policy: () => policy,
+          policy: () => readPolicy(),
         });
         return;
       }
@@ -226,8 +280,7 @@ function endpointLine(config: ApproveConfig): string {
   return `${endpoint} · model ${config.model || "(unset)"}`;
 }
 
-function statusLine(loaded: LoadedConfig, policy: LoadedPolicy): string {
-  const config = loaded.config;
+function statusLine(config: ApproveConfig, policy: LoadedPolicy, configFile: string): string {
   const keyEnv = apiKeyEnvReferences(config.apiKey);
   return [
     `enabled=${config.enabled}`,
@@ -236,7 +289,7 @@ function statusLine(loaded: LoadedConfig, policy: LoadedPolicy): string {
     `danger>=${config.thresholds.danger} policy>=${config.thresholds.policy}`,
     `action=${config.action} noUiFallback=${config.noUiFallback} failMode=${config.failMode}`,
     `policy=${policy.path}${policy.created ? " (created)" : ""}${policy.fallback ? " (built-in default)" : ""}`,
-    `config=${loaded.path}`,
+    `config=${configFile}`,
   ].join(" · ");
 }
 

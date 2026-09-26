@@ -31,6 +31,8 @@ export interface ApproveMenuState {
   paths: MenuPaths;
   /** False when the endpoint, model, or key is unusable. */
   configured: boolean;
+  /** Set when a config change on disk was refused; shown on the main screen. */
+  configProblem?: string;
 }
 
 export interface MenuDeps {
@@ -38,8 +40,6 @@ export interface MenuDeps {
   getState(): ApproveMenuState;
   /** Merge a patch into the config, persist it, and reload. */
   update(patch: Partial<ApproveConfig>): void;
-  /** Re-read config and policy from disk, discarding any UI edits. */
-  reloadFromDisk(): void;
   /** Replace the policy file with this text. */
   writePolicy(text: string): void;
   /** Put the built-in default policy back. */
@@ -81,7 +81,6 @@ export type ApproveActionId =
   | "policy-restore"
   | "policy-back"
   | "test-connection"
-  | "reload-from-disk"
   | "show-config-path"
   | "show-log-path";
 
@@ -157,6 +156,7 @@ export function createApproveMenu(
             statusLine(state),
             endpointLine(state.config),
             state.configured ? "" : "Not configured yet: set the endpoint, model, and API key.",
+            state.configProblem ?? "",
           ].filter(Boolean),
           items: [
             { id: "settings", label: "Settings", description: "Every option with its current value.", to: "settings" },
@@ -241,7 +241,6 @@ export function createApproveMenu(
           lines: [`Config: ${paths.config}`, `Policy: ${policy.path}`, `Log: ${paths.log}`],
           items: [
             { id: "test", label: "Test the connection", description: "Send one harmless check request.", action: "test-connection", busyLabel: "Checking…" },
-            { id: "reload", label: "Reload config and policy from disk", description: "For edits made outside this menu.", action: "reload-from-disk" },
             { id: "config-path", label: "Show the config path", action: "show-config-path" },
             { id: "log-path", label: "Show the log path and size", action: "show-log-path" },
           ],
@@ -350,11 +349,6 @@ export function createApproveMenu(
 
       "test-connection": async ({ ctx }) => {
         ctx.ui.notify(await deps.connectionReport(), "info");
-        return stay;
-      },
-      "reload-from-disk": ({ ctx }) => {
-        deps.reloadFromDisk();
-        ctx.ui.notify("Reloaded config and policy from disk.", "info");
         return stay;
       },
       "show-config-path": ({ ctx }) => {
