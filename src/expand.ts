@@ -44,6 +44,16 @@ const REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/gu;
 const BARE_REFERENCE = /\$([A-Za-z_][A-Za-z0-9_]*)/gu;
 /** Exactly the two command forms that are answered from local state. */
 const PWD = /\$\(\s*pwd(?:\s+-P)?\s*\)/gu;
+/**
+ * The name that also means "the working directory".
+ *
+ * `${PWD}` is a shell variable, so reading it from the environment would give the
+ * *logical* path — whatever string the shell was told — which can differ from the
+ * physical one whenever a symlink is involved. Since this is documented as another
+ * way to write `$(pwd -P)`, both resolve to the same physical value.
+ */
+const PWD_NAMES = new Set(["PWD"]);
+
 /** Any `$(…)` at all, so the ones that are not `pwd` can be reported. */
 const COMMAND = /\$\([^)]*\)/gu;
 
@@ -61,7 +71,9 @@ export function findUnresolved(
   text: string,
   env: Readonly<Record<string, string | undefined>>,
 ): string[] {
-  return [...new Set(findReferences(text).filter((name) => !env[name]))];
+  return [
+    ...new Set(findReferences(text).filter((name) => !env[name] && !PWD_NAMES.has(name))),
+  ];
 }
 
 /**
@@ -98,9 +110,12 @@ export function expandVariables(
   options: ExpandOptions = {},
 ): string {
   const env = options.env ?? {};
-  const withPwd =
-    options.cwd === undefined ? text : text.replace(PWD, () => options.cwd as string);
+  const cwd = options.cwd;
+  const withPwd = cwd === undefined ? text : text.replace(PWD, () => cwd);
   return withPwd.replace(REFERENCE, (original, name: string) => {
+    // `${PWD}` is another spelling of the working directory, so it answers from the
+    // same value as `$(pwd -P)` rather than from the environment.
+    if (cwd !== undefined && PWD_NAMES.has(name)) return cwd;
     const value = env[name];
     return value === undefined || value === "" ? original : value;
   });

@@ -248,13 +248,18 @@ Values are flat strings. Three substitutions happen, and nothing else:
 |---|---|
 | `${NAME}` | the environment variable `NAME`, if set and non-empty |
 | `${command}` | the command being judged, always, whatever the environment says |
-| `$(pwd)` / `$(pwd -P)` | the session's working directory |
+| `$(pwd)` / `$(pwd -P)` / `${PWD}` | the session's working directory |
 
 The built-in categories treat `/tmp` as the scratch directory, because that is
 where a scratch file belongs on most machines. If yours is elsewhere — an
 `XDG_RUNTIME_DIR`, a per-session directory under your home — say so in `state` as
 `scratch_directory` and in `write_outside_allowed`, and the categories that mention
 "the scratch directory" will read against that one.
+
+All three spellings give the *physical* path. `$(pwd -P)` and `process.cwd()` agree
+by definition; `${PWD}` is answered from the same value rather than from the shell
+variable of that name, whose value is the *logical* path and can differ whenever a
+symlink is involved.
 
 `$(…)` with any other command is **not** executed and is rejected at load with
 the fragment named. Handing config text to a shell would make editing
