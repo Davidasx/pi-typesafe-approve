@@ -53,6 +53,7 @@ import {
   decide,
   negativeSet,
   signalsOf,
+  verdictLine,
 } from "./classify.ts";
 import type { DecisionLogRecord, DecisionLogger } from "./log.ts";
 import { DEFAULT_STATE } from "./policy.ts";
@@ -232,6 +233,8 @@ export function createGate(deps: GateDeps) {
       ui,
       log,
       { durationMs: now() - started },
+      // The rule the model chose, so the agent is told what it ran into.
+      policy.categories.find((category) => category.id === decision.signals.worstCategory)?.what,
     );
   };
 
@@ -247,6 +250,7 @@ export function createGate(deps: GateDeps) {
     ui: GateUi,
     log: LogSink,
     extra: LogExtra = {},
+    rule?: string,
   ): Promise<GateResult> {
     if (action === "allow") {
       log(decision, "allow", extra);
@@ -263,22 +267,27 @@ export function createGate(deps: GateDeps) {
     }
 
     if (action === "prompt") {
-      const approved = await ui.confirm(
-        "Run this command?",
-        [
-          `Command: ${command}`,
-          `Signals: ${summary || "unknown"}`,
-          `Triggers: ${decision.reasons.join("; ") || "n/a"}`,
-        ].join("\n"),
-      );
+      // The confirmation dialog is a `Text` component: it wraps but cannot scroll,
+      // and a long command runs off the bottom of a short terminal. So the dialog
+      // carries only the verdict, and the command goes to the transcript first,
+      // where it can be scrolled, searched, and still be there afterwards.
+      ui.notify(`pi-typesafe-approve · ${verdictLine(decision)}\n${command}`, "warning");
+      const approved = await ui.confirm(`Run this command?\n${verdictLine(decision)}`, "");
       log(decision, approved ? "allow" : "block", extra);
       return approved
         ? undefined
-        : { block: true, reason: "The user declined this command at the pi-typesafe-approve risk check." };
+        : {
+            block: true,
+            reason: [
+              "The user declined this command at the pi-typesafe-approve risk check.",
+              `Verdict: ${verdictLine(decision)}.`,
+              "Do not retry it, and do not rephrase it to get past the check; ask the user what they want instead.",
+            ].join("\n"),
+          };
     }
 
     log(decision, "block", extra);
-    return { block: true, reason: blockedReason(decision, command) };
+    return { block: true, reason: blockedReason(decision, command, rule) };
   }
 }
 

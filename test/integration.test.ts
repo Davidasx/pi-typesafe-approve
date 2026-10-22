@@ -153,8 +153,8 @@ test("the extension gates a real Bash tool call through a real HTTP endpoint", a
     ctx,
   );
   assert.equal(dangerous?.block, true);
-  assert.match(dangerous?.reason ?? "", /was not run/);
-  assert.match(dangerous?.reason ?? "", /violation=0\.99 most likely irreversible_destruction/);
+  assert.match(dangerous?.reason ?? "", /blocked this command/);
+  assert.match(dangerous?.reason ?? "", /irreversible_destruction \d+% ≥ 30% · stop/);
 
   // Non-bash tools are never sent to the model.
   const beforeCount = stub.captured.length;

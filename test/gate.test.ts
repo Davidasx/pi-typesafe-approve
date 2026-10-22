@@ -189,7 +189,9 @@ test("an unreachable model fails closed when configured to", async () => {
   });
   const result = await h.gate(bash("ls"), h.ui);
   assert.equal(result?.block, true);
-  assert.match(result?.reason ?? "", /model unavailable/);
+  // The degraded path has no category, so the line names the real cause.
+  assert.match(result?.reason ?? "", /check unavailable \(error\)/);
+  assert.match(result?.reason ?? "", /fail-closed|approve/i);
 });
 
 test("a repeated command is served from the cache", async () => {

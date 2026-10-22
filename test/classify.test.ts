@@ -11,6 +11,7 @@ import {
   negativeSet,
   signalsOf,
   summarize,
+  verdictLine,
 } from "../src/classify.ts";
 import { BUILT_IN_CATEGORIES, DEFAULT_STATE } from "../src/policy.ts";
 import type { Category, Policy, SystemOneResponse } from "../src/types.ts";
@@ -132,7 +133,7 @@ test("a negative category escalates the command", () => {
   assert.equal(decision.signals.violationMass, 1);
   assert.equal(decision.signals.label, "irreversible_destruction");
   assert.equal(decision.signals.labelIsPositive, false);
-  assert.match(decision.reasons[0] ?? "", /violation probability 1\.00 >= 0\.3/);
+  assert.match(decision.reasons[0] ?? "", /^100% of violation mass, limit 30%$/);
 });
 
 test("violation mass sums across negative categories, not just the top one", () => {
@@ -202,14 +203,17 @@ test("two policies can be judged in one process without interference", () => {
 
 // ── presentation ───────────────────────────────────────────────────────────
 
-test("summaries name the mass and the most likely category", () => {
+test("one line per decision, for the prompt and the log", () => {
   const decision = decide(answer("secret_exposure"), config, negative);
-  const line = summarize("cat ~/.ssh/id_ed25519", decision);
-  assert.match(line, /^escalate violation=1\.00 most likely secret_exposure\(1\.00\) \[stop\] — cat ~\/\.ssh\/id_ed25519$/);
-  assert.match(signalsOf(decision), /^violation=1\.00/);
+  assert.equal(
+    summarize("cat ~/.ssh/id_ed25519", decision),
+    "secret_exposure 100% ≥ 30% · stop — cat ~/.ssh/id_ed25519",
+  );
+  assert.equal(verdictLine(decision), "secret_exposure 100% ≥ 30% · stop");
+  assert.equal(signalsOf(decision), "secret_exposure 100%");
 
   const allowed = decide(answer("routine_work"), config, negative);
-  assert.match(summarize("ls", allowed), /most likely routine_work\(1\.00\) — ls$/);
+  assert.equal(verdictLine(allowed), "allow · routine_work 100%");
 });
 
 test("a stop names the most likely violation, not the overall argmax", () => {
@@ -229,30 +233,37 @@ test("a stop names the most likely violation, not the overall argmax", () => {
   assert.equal(decision.verdict, "escalate");
   assert.equal(decision.signals.worstCategory, "write_outside_allowed");
   assert.equal(decision.signals.worstProbability?.toFixed(2), "0.30");
-  assert.match(decision.reasons[0] ?? "", /most likely violation: write_outside_allowed at 0\.30/);
+  // The reason line no longer repeats what the verdict line says.
+  assert.match(decision.reasons[0] ?? "", /^48% of violation mass, limit 30%$/);
 
   const line = summarize("hostile", decision);
-  assert.match(line, /most likely violation write_outside_allowed\(0\.30\)/);
-  assert.match(line, /top category routine_work/);
+  assert.match(line, /^write_outside_allowed 30% ≥ 30%/);
+  assert.match(line, /routine_work also plausible/);
+  assert.match(line, /· stop — hostile$/);
 });
 
-test("an allowed command does not claim a violation at zero probability", () => {
+test("an allowed command names its own category and no violation", () => {
   const decision = decide(answer("routine_work"), config, negative);
   assert.equal(decision.signals.worstProbability, 0);
-  assert.match(summarize("ls", decision), /most likely routine_work/);
-  assert.doesNotMatch(summarize("ls", decision), /most likely violation/);
+  assert.equal(summarize("ls", decision), "allow · routine_work 100% — ls");
+  assert.doesNotMatch(summarize("ls", decision), /stop/);
 });
 
-test("a clear violation still reads as the plain argmax", () => {
+test("a clear violation reads as one line, category first", () => {
   const decision = decide(answer("secret_exposure"), config, negative);
-  assert.match(summarize("cat key", decision), /most likely secret_exposure\(1\.00\) \[stop\]/);
+  assert.equal(summarize("cat key", decision), "secret_exposure 100% ≥ 30% · stop — cat key");
 });
 
-test("the blocked reason carries the evidence and the command", () => {
+test("the blocked reason is self-contained for the agent", () => {
   const decision = decide(answer("irreversible_destruction"), config, negative);
-  const reason = blockedReason(decision, "rm -rf ~/Documents");
-  assert.match(reason, /was not run/);
-  assert.match(reason, /violation=1\.00/);
+  const reason = blockedReason(decision, "rm -rf ~/Documents", BUILT_IN_CATEGORIES[0]?.what);
+
+  assert.match(reason, /^pi-typesafe-approve blocked this command: irreversible_destruction 100% ≥ 30% · stop\./);
+  // The rule text is included, so the agent can avoid the pattern rather than
+  // guess at it.
+  assert.match(reason, /Rule: Destroys data that cannot be recovered/);
   assert.match(reason, /Command: rm -rf ~\/Documents/);
+  // And it explicitly refuses the rephrase-and-retry loop.
+  assert.match(reason, /do not rephrase it to get past this check/);
   assert.ok(!reason.includes("apiKey"));
 });

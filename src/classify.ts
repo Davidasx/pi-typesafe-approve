@@ -147,12 +147,11 @@ export function decide(
   };
 
   const threshold = config.thresholds.violation;
+  // One line only, and no repetition of what the summary already says: the number
+  // and the category appear once per prompt, not twice.
   const reasons =
     violationMass >= threshold
-      ? [
-          `violation probability ${format(violationMass)} >= ${threshold}` +
-            (worstCategory ? ` (most likely violation: ${worstCategory} at ${format(worstProbability ?? 0)})` : ""),
-        ]
+      ? [`${percent(violationMass)} of violation mass, limit ${percent(threshold)}`]
       : [];
 
   const decision: Decision = {
@@ -174,42 +173,59 @@ function format(value: number): string {
   return value.toFixed(2);
 }
 
-/** One-line summary for logs, notifications, and escalation prompts. */
+/**
+ * One line describing the decision: the category that drove it and how much mass
+ * crossed the limit.
+ *
+ * Deliberately one line, because it is the only text that reliably fits the
+ * confirmation dialog, and the dialog cannot scroll.
+ */
 export function summarize(command: string, decision: Decision): string {
+  return `${verdictLine(decision)} — ${truncate(command, 120)}`;
+}
+
+/**
+ * The decision without the command, for the confirmation prompt.
+ *
+ * A stopped command reads as `<category> <probability> ≥ <limit>`; the category is
+ * the most likely *violation*, which is what explains the stop even when a
+ * positive category won the argmax. An allowed command names its own category.
+ */
+export function verdictLine(decision: Decision): string {
   const signals = decision.signals;
-  const parts: string[] = [];
-  if (signals.violationMass !== undefined) {
-    parts.push(`violation=${format(signals.violationMass)}`);
+  // A degraded decision never reached the model, so there is no category to name;
+  // saying "unknown 0%" would hide the real reason in the one place it matters.
+  if (decision.degraded !== undefined) {
+    return `check unavailable (${decision.degraded})`;
   }
-  // When a violation outranks everything else, naming the top category is enough;
-  // when a positive category wins the argmax but violations still cross the
-  // threshold, the violation is the only thing worth printing.
-  const hasViolation = (signals.worstProbability ?? 0) > 0;
-  if (
-    hasViolation &&
-    signals.worstCategory !== undefined &&
-    (signals.labelIsPositive || signals.label !== signals.worstCategory)
-  ) {
-    parts.push(
-      `most likely violation ${signals.worstCategory}(${format(signals.worstProbability ?? 0)})` +
-        (signals.label ? `, top category ${signals.label}` : ""),
-    );
-  } else if (signals.label) {
-    const confidence = signals.labelConfidence !== undefined ? `(${format(signals.labelConfidence)})` : "";
-    parts.push(
-      `most likely ${signals.label}${confidence}${signals.labelIsPositive ? "" : " [stop]"}`,
-    );
+  if (decision.verdict === "allow") {
+    return `allow · ${signals.label ?? "no category"} ${percent(signals.labelConfidence ?? 0)}`;
   }
-  const verdict = decision.verdict === "allow" ? "allow" : "escalate";
-  return `${verdict} ${parts.join(" ")} — ${truncate(command, 120)}`;
+  const category = signals.worstCategory ?? signals.label ?? "unknown";
+  const probability = signals.worstProbability ?? signals.violationMass ?? 0;
+  const detail =
+    signals.labelIsPositive && signals.label
+      ? `, ${signals.label} also plausible`
+      : "";
+  return `${category} ${percent(probability)} ≥ ${percent(limitOf(decision))}${detail} · stop`;
 }
 
 /** The `violation=… most likely …` portion, without the command. */
 export function signalsOf(decision: Decision): string {
-  return summarize("", decision)
-    .replace(/^(allow|escalate)\s*/u, "")
-    .split(" — ")[0]
-    ?.trim() ?? "";
+  const signals = decision.signals;
+  return signals.worstCategory && (signals.worstProbability ?? 0) > 0
+    ? `${signals.worstCategory} ${percent(signals.worstProbability ?? 0)}`
+    : `${signals.label ?? "unknown"} ${percent(signals.labelConfidence ?? 0)}`;
+}
+
+function limitOf(decision: Decision): number {
+  const first = decision.reasons[0] ?? "";
+  const found = /limit (\d+)%/u.exec(first);
+  return found ? Number(found[1]) / 100 : 0;
+}
+
+function percent(value: number): string {
+  return `${Math.round(value * 100)}%`;
 }
 
 function truncate(value: string, max: number): string {
@@ -220,16 +236,21 @@ function truncate(value: string, max: number): string {
 /**
  * Reason text handed back to the agent when a command is blocked.
  *
- * It states the decision and the evidence, and deliberately does not enumerate
- * what would change the verdict: a blocked command should go back to the human,
- * not teach the caller how to rephrase its way past the gate.
+ * The agent sees only this string, so it has to be useful on its own: what was
+ * decided, which category drove it, and the rule that category stands for. The
+ * rule text matters because the agent can then do something smarter than retrying
+ * the same command — avoid the pattern, or ask the user, who is the only one who
+ * can change the policy.
+ *
+ * It still does not enumerate what would let the command through. A blocked
+ * command should go back to the human, not teach the caller how to rephrase its
+ * way past the gate.
  */
-export function blockedReason(decision: Decision, command: string): string {
+export function blockedReason(decision: Decision, command: string, rule?: string): string {
   return [
-    "pi-typesafe-approve: a System One risk check flagged this command, so it was not run.",
-    `Signals: ${signalsOf(decision)}.`,
-    `Triggers: ${decision.reasons.join("; ") || "n/a"}.`,
+    `pi-typesafe-approve blocked this command: ${verdictLine(decision)}.`,
+    ...(rule ? [`Rule: ${truncate(rule, 300)}`] : []),
     `Command: ${truncate(command, 300)}`,
-    "Ask the user to confirm before running it, or choose a safer equivalent.",
+    "The user must approve it. Do not retry the same command, and do not rephrase it to get past this check.",
   ].join("\n");
 }

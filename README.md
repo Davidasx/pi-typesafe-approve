@@ -237,7 +237,7 @@ the scratch directory" from prose into a fact:
   "context": "...",
   "command": "${command}",
   "working_directory": "$(pwd -P)",
-  "scratch_directory": "${PI_TMPDIR}",
+  "scratch_directory": "${SCRATCH}",
   "home": "${HOME}"
 }
 ```
@@ -249,6 +249,12 @@ Values are flat strings. Three substitutions happen, and nothing else:
 | `${NAME}` | the environment variable `NAME`, if set and non-empty |
 | `${command}` | the command being judged, always, whatever the environment says |
 | `$(pwd)` / `$(pwd -P)` | the session's working directory |
+
+The built-in categories treat `/tmp` as the scratch directory, because that is
+where a scratch file belongs on most machines. If yours is elsewhere — an
+`XDG_RUNTIME_DIR`, a per-session directory under your home — say so in `state` as
+`scratch_directory` and in `write_outside_allowed`, and the categories that mention
+"the scratch directory" will read against that one.
 
 `$(…)` with any other command is **not** executed and is rejected at load with
 the fragment named. Handing config text to a shell would make editing
@@ -323,6 +329,12 @@ else opens a single-field editor, and an invalid number is reported without leav
 the screen. `Policy` lists the categories as they are sent, opens `policy.json` in
 a full editor, and can restore the built-in set after asking. `Diagnostics` runs a
 real request against the endpoint and shows the file paths.
+
+When a command is stopped and needs approval, the confirmation dialog carries only
+one line — the category, its probability, and the limit. The command itself goes to
+the transcript first, because the dialog is a `Text` component that wraps but does
+not scroll: a long command would run off the bottom of a short terminal, and the
+mouse wheel scrolls the transcript underneath it, not the dialog.
 
 No screen ever renders the API key: it is shown as `${NAME}` or `literal`, and
 the key editor is deliberately not prefilled, because a prefill would put the
