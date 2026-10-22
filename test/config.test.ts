@@ -36,13 +36,12 @@ test("validateConfig merges values and reports wrong types", () => {
     endpoint: "https://a.test/v1/systemone",
     model: "jev-latest",
     apiKey: "${TYPESAFE_API_KEY}",
-    thresholds: { danger: 0.3, policy: 0.2 },
+    thresholds: { violation: 0.35 },
     timeoutMs: 5000,
     enabled: "yes",
   });
   assert.equal(config.endpoint, "https://a.test/v1/systemone");
-  assert.equal(config.thresholds.danger, 0.3);
-  assert.equal(config.thresholds.policy, 0.2);
+  assert.equal(config.thresholds.violation, 0.35);
   assert.equal(config.timeoutMs, 5000);
   // "enabled" was the wrong type, so the default survives and a problem is listed.
   assert.equal(config.enabled, DEFAULT_CONFIG.enabled);
@@ -64,8 +63,8 @@ test("validateConfig names the keys that were merged away", () => {
 });
 
 test("validateConfig rejects an out-of-range threshold silently by falling back", () => {
-  const { config } = validateConfig({ thresholds: { danger: 4 } });
-  assert.equal(config.thresholds.danger, DEFAULT_CONFIG.thresholds.danger);
+  const { config } = validateConfig({ thresholds: { violation: 4 } });
+  assert.equal(config.thresholds.violation, DEFAULT_CONFIG.thresholds.violation);
 });
 
 test("resolveApiKey accepts literals and env references", () => {

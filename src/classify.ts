@@ -1,134 +1,140 @@
 /**
- * Turn a Bash command into a System One request, and the answer into a verdict.
+ * Turn a Bash command into one System One request, and the answer into a verdict.
  *
- * Design notes, both from measurement rather than taste:
+ * ## One question, with a polarity
  *
- * 1. **Noul first, tier second, strictest wins.** A System One model's `choice`
- *    tier and its `noul` probability disagree on a meaningful minority of
- *    inputs, in both directions. Taking the stricter of the two recovers cases
- *    each signal alone misses.
+ * The model chooses one category from the policy, and the verdict is the summed
+ * probability of every category that is not positive. That sum is exactly
+ * "how likely is it that this command does one of the things we stop".
  *
- * 2. **A low threshold is correct here.** The model is fast and cheap but has
- *    no scratchpad and no environment awareness, so it over-flags legitimate
- *    operations (`npm ci`, `systemctl restart`, a narrow `kill -9`). The gate
- *    is therefore a *triage* layer, not a verdict: crossing a threshold sends
- *    the command to a human, it does not delete it.
+ * An earlier version asked three questions — a risk tier, a second opinion on
+ * danger, and a policy yes/no — and took the strictest answer. Measurements on
+ * 304 real decisions showed the risk tier never once changed the outcome on its
+ * own: the set of commands it called `danger` was a strict subset of the ones the
+ * numeric danger score already crossed. Two signals were not redundancy, though:
+ * they disagreed in both directions, and each caught commands the other missed.
+ * The category list keeps both kinds of judgment — generic harm and the user's own
+ * rules — in a single question, so it keeps the reach of two signals at the cost
+ * of one.
  *
- * 3. **Context is the model's blind spot.** It cannot see the working
- *    directory, whether the repo is clean, or what a glob expands to, so the
- *    working directory and the agent's rules are placed in `state` explicitly.
+ * ## Why the summary is short
+ *
+ * The model cannot see anything that is not in the request, so the state carries
+ * the command, the working directory, and one line saying what this is. That is
+ * all it needs: everything it must judge against is in the category list, which is
+ * part of the question rather than the state. Earlier versions carried whole rule
+ * files here, which cost tokens on every request and, being written for a
+ * different reader, made the model hedge.
  */
 
 import type {
   ApproveConfig,
-  ChoiceAnswer,
+  Category,
   Decision,
   DecisionSignals,
   JevQuestion,
-  NoulAnswer,
+  Policy,
   StructuredValue,
   SystemOneResponse,
 } from "./types.ts";
+import { polarityOf } from "./types.ts";
 
-export const RISK_QUESTION = "risk";
-export const DANGER_QUESTION = "danger";
-export const POLICY_QUESTION = "violates_policy";
+export const OUTCOME_QUESTION = "outcome";
 
-export const RISK_TIERS = {
-  safe: "Read-only, or only affects files that are regenerated from source (build output, dependency caches, temporary files), or otherwise leaves no lasting change outside the working tree",
-  caution:
-    "Changes state that is recoverable but inconvenient: restarting a service, stopping processes, deleting untracked work, changing permissions on non-critical paths, or rewriting local-only history",
-  danger:
-    "Causes irreversible data loss, weakens or disables a security control, exposes credentials, can take down the machine or a critical service, or runs a downloaded payload",
-} as const;
+/** The one line of context this extension adds to the command and directory. */
+export const REVIEW_CONTEXT =
+  "One shell command that an AI coding agent wants to run on the user's own machine is being reviewed before it runs. Decide what it would do.";
 
-/** The `state` object sent to the model for one command. */
-export function buildState(
-  command: string,
-  cwd: string,
-  policy: string,
-): StructuredValue {
+/**
+ * The `state` sent with every request.
+ *
+ * Deliberately three fields: what is being judged, where, and the one sentence of
+ * context needed to read the categories in the right frame.
+ */
+export function buildState(command: string, cwd: string): StructuredValue {
   return {
+    context: REVIEW_CONTEXT,
     command,
     working_directory: cwd,
-    review_policy: policy,
   };
 }
 
-/** The three typed questions asked about every command. */
-export function buildQuestions(): Record<string, JevQuestion> {
+/** Ids of the categories that count toward the violation total. */
+export function negativeIds(categories: readonly Category[]): string[] {
+  return categories.filter((category) => polarityOf(category) === "negative").map((category) => category.id);
+}
+
+/**
+ * The single question: which of these does the command do?
+ *
+ * Each category becomes one option, described by what it covers plus its examples.
+ * The API accepts a string, an object, or an array per option and reserves none of
+ * the field names, so `{ what, examples }` is our own shape.
+ */
+export function buildQuestions(policy: Policy): Record<string, JevQuestion> {
+  const criteria: Record<string, StructuredValue | null> = {};
+  for (const category of policy.categories) {
+    criteria[category.id] = category.examples?.length
+      ? { what: category.what, examples: [...category.examples] }
+      : category.what;
+  }
+
   return {
-    [RISK_QUESTION]: {
+    [OUTCOME_QUESTION]: {
       type: "choice",
       instructions:
-        "Decide what actually happens when a POSIX shell runs `command`. Read it the way a shell would: follow pipes, command substitutions, variable expansion, and `&&`/`;`/`||` sequences, and decode any literals that are base64, hex, or ANSI-C escaped. Judge the whole command, including anything hidden behind a benign leading command.",
-      criteria: { ...RISK_TIERS },
-    },
-    [DANGER_QUESTION]: {
-      type: "noul",
-      instructions:
-        "Would running `command` cause irreversible data loss, weaken security, expose a credential, or disrupt the machine or a critical service? Answer yes for destructive actions that cannot be undone, for anything that adds or grants access (keys, backdoors, world-writable permissions, disabled firewalls), and for denial-of-service payloads. Answer no for actions that only touch regenerable files or that can be reverted.",
-      criteria: {
-        true: "At least one irreversible, security-weakening, or service-disrupting effect",
-        false: "No irreversible, security-weakening, or service-disrupting effect",
-      },
-    },
-    [POLICY_QUESTION]: {
-      type: "noul",
-      instructions:
-        "Does `command` do anything that `review_policy` says must be stopped? Judge only against that policy. The policy also lists ordinary actions that are not reasons to stop; a command that only does those is not a violation.",
-      criteria: {
-        true: "Does something the review policy says must be stopped",
-        false: "Does nothing the review policy says must be stopped",
-      },
+        "Which one of these does `command` most importantly do? Read the command the way a shell would run it: " +
+        "follow pipes, command substitutions, and `&&` / `;` / `||` sequences, and decode anything encoded with " +
+        "base64, hex, or ANSI-C escapes. Judge what it actually does, not how alarming the words look: pick the " +
+        "category whose description fits best, and prefer a category that describes ordinary or protective work " +
+        "when that is what this is.",
+      criteria,
     },
   };
 }
 
 /**
- * Apply the configured thresholds to the model's answers.
+ * Apply the threshold to the model's answer.
  *
- * The model is asked three independent questions and the strictest answer wins,
- * because each question is individually blind to something the others catch.
+ * The violation total is the sum of every non-positive category's probability.
+ * Summing rather than reading the single most likely category matters: a command
+ * can be split across two violations at 0.4 each with nothing above the threshold
+ * individually, and that is still more violation mass than a 0.5 split with 0.5 of
+ * ordinary work.
  */
-export function decide(response: SystemOneResponse, config: ApproveConfig): Decision {
-  const signals: DecisionSignals = {};
-  const reasons: string[] = [];
-
-  const tier = asChoice(response.answers[RISK_QUESTION]);
-  if (tier) {
-    signals.tier = tier.choice;
-    signals.tierConfidence = tier.confidence;
-    const confidence = tier.confidence;
-    if (
-      config.escalateOnTiers.includes(tier.choice) &&
-      confidence >= config.minTierConfidence
-    ) {
-      reasons.push(
-        `risk tier "${tier.choice}" (confidence ${format(confidence)})`,
-      );
-    }
+export function decide(
+  response: SystemOneResponse,
+  config: ApproveConfig,
+  negative: ReadonlySet<string>,
+): Decision {
+  const answer = response.answers[OUTCOME_QUESTION];
+  if (!answer || answer.type !== "choice") {
+    throw new Error("the answer was not a choice");
   }
 
-  const danger = asNoul(response.answers[DANGER_QUESTION]);
-  if (danger) {
-    signals.dangerProbability = danger.noul;
-    if (danger.noul >= config.thresholds.danger) {
-      reasons.push(
-        `danger probability ${format(danger.noul)} >= ${config.thresholds.danger}`,
-      );
-    }
+  // The response lists option ids but not their polarity, so the caller passes the
+  // set of ids that count as violations. Keeping it a parameter rather than module
+  // state means two policies can be evaluated in one process without interference.
+  const categories = answer.probabilities;
+  let violationMass = 0;
+  for (const [id, probability] of Object.entries(categories)) {
+    if (negative.has(id)) violationMass += probability;
   }
 
-  const policy = asNoul(response.answers[POLICY_QUESTION]);
-  if (policy) {
-    signals.violatesPolicyProbability = policy.noul;
-    if (policy.noul >= config.thresholds.policy) {
-      reasons.push(
-        `policy-violation probability ${format(policy.noul)} >= ${config.thresholds.policy}`,
-      );
-    }
-  }
+  const label = answer.choice;
+  const signals: DecisionSignals = {
+    violationMass,
+    label,
+    labelIsPositive: !negative.has(label),
+    labelConfidence: answer.confidence,
+  };
+
+  const threshold = config.thresholds.violation;
+  const reasons =
+    violationMass >= threshold
+      ? [`violation probability ${format(violationMass)} >= ${threshold} (most likely: ${label})`]
+      : [];
+
   const decision: Decision = {
     verdict: reasons.length > 0 ? "escalate" : "allow",
     reasons,
@@ -139,12 +145,9 @@ export function decide(response: SystemOneResponse, config: ApproveConfig): Deci
   return decision;
 }
 
-function asChoice(answer: SystemOneResponse["answers"][string] | undefined): ChoiceAnswer | undefined {
-  return answer?.type === "choice" ? answer : undefined;
-}
-
-function asNoul(answer: SystemOneResponse["answers"][string] | undefined): NoulAnswer | undefined {
-  return answer?.type === "noul" ? answer : undefined;
+/** The set `decide` wants, derived from a policy. */
+export function negativeSet(policy: Policy): ReadonlySet<string> {
+  return new Set(negativeIds(policy.categories));
 }
 
 function format(value: number): string {
@@ -153,24 +156,27 @@ function format(value: number): string {
 
 /** One-line summary for logs, notifications, and escalation prompts. */
 export function summarize(command: string, decision: Decision): string {
+  const signals = decision.signals;
   const parts: string[] = [];
-  if (decision.signals.tier) {
+  if (signals.violationMass !== undefined) {
+    parts.push(`violation=${format(signals.violationMass)}`);
+  }
+  if (signals.label) {
+    const confidence = signals.labelConfidence !== undefined ? `(${format(signals.labelConfidence)})` : "";
     parts.push(
-      `tier=${decision.signals.tier}${
-        decision.signals.tierConfidence !== undefined
-          ? `(${format(decision.signals.tierConfidence)})`
-          : ""
-      }`,
+      `most likely ${signals.label}${confidence}${signals.labelIsPositive ? "" : " [stop]"}`,
     );
-  }
-  if (decision.signals.dangerProbability !== undefined) {
-    parts.push(`danger=${format(decision.signals.dangerProbability)}`);
-  }
-  if (decision.signals.violatesPolicyProbability !== undefined) {
-    parts.push(`policy=${format(decision.signals.violatesPolicyProbability)}`);
   }
   const verdict = decision.verdict === "allow" ? "allow" : "escalate";
   return `${verdict} ${parts.join(" ")} — ${truncate(command, 120)}`;
+}
+
+/** The `violation=… most likely …` portion, without the command. */
+export function signalsOf(decision: Decision): string {
+  return summarize("", decision)
+    .replace(/^(allow|escalate)\s*/u, "")
+    .split(" — ")[0]
+    ?.trim() ?? "";
 }
 
 function truncate(value: string, max: number): string {
@@ -193,12 +199,4 @@ export function blockedReason(decision: Decision, command: string): string {
     `Command: ${truncate(command, 300)}`,
     "Ask the user to confirm before running it, or choose a safer equivalent.",
   ].join("\n");
-}
-
-/** The `tier=… danger=… policy=…` portion of a summary, without the command. */
-export function signalsOf(decision: Decision): string {
-  return summarize("", decision)
-    .replace(/^(allow|escalate)\s*/u, "")
-    .split(" — ")[0]
-    ?.trim() ?? "";
 }

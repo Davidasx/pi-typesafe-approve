@@ -51,6 +51,7 @@ import {
   buildQuestions,
   buildState,
   decide,
+  negativeSet,
   signalsOf,
 } from "./classify.ts";
 import type { DecisionLogRecord, DecisionLogger } from "./log.ts";
@@ -58,6 +59,8 @@ import { SystemOneError } from "./systemone.ts";
 import type {
   ApproveConfig,
   Decision,
+  JevQuestion,
+  Policy,
   StructuredValue,
   SystemOneResponse,
 } from "./types.ts";
@@ -86,8 +89,8 @@ export interface GateUi {
 
 export interface GateDeps {
   getConfig(): ApproveConfig;
-  /** The review policy text sent with every request. */
-  getPolicy(): string;
+  /** The categories the model chooses between. */
+  getPolicy(): Policy;
   getCwd(): string;
   /**
    * Whether this configuration is usable. Takes the config rather than fetching
@@ -97,7 +100,7 @@ export interface GateDeps {
   isConfigured(config: ApproveConfig): boolean;
   /** Perform one model request. Implemented by the extension host. */
   ask(
-    request: { state: StructuredValue; questions: ReturnType<typeof buildQuestions> },
+    request: { state: StructuredValue; questions: Record<string, JevQuestion> },
     signal: AbortSignal | undefined,
     config: ApproveConfig,
   ): Promise<SystemOneResponse>;
@@ -169,9 +172,10 @@ export function createGate(deps: GateDeps) {
         ...extra,
       });
     };
-    const state = buildState(command, cwd, deps.getPolicy());
-    const questions = buildQuestions();
-    const cacheKey = hashRequest(config, state);
+    const policy = deps.getPolicy();
+    const state = buildState(command, cwd);
+    const questions = buildQuestions(policy);
+    const cacheKey = hashRequest(config, state, policy);
     const cached = cacheGet(cacheKey);
     if (cached) {
       const decision: Decision = { ...cached, cached: true };
@@ -214,7 +218,7 @@ export function createGate(deps: GateDeps) {
       return undefined;
     }
 
-    const decision = decide(response, config);
+    const decision = decide(response, config, negativeSet(policy));
     cacheSet(cacheKey, decision, config.cacheSize);
 
     return finish(
@@ -315,13 +319,15 @@ function readCommand(input: unknown): string | undefined {
   return trimmed.length > 0 ? command : undefined;
 }
 
-function hashRequest(config: ApproveConfig, state: StructuredValue): string {
+function hashRequest(config: ApproveConfig, state: StructuredValue, policy: Policy): string {
   // The endpoint and model are part of the key because a different model can
-  // legitimately answer the same state differently.
+  // legitimately answer the same state differently, and so are the categories:
+  // editing the policy changes the answer to an unchanged command.
   const material = JSON.stringify({
     endpoint: config.endpoint,
     model: config.model,
     state,
+    categories: policy.categories,
   });
   return createHash("sha256").update(material).digest("hex");
 }

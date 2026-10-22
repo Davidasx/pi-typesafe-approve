@@ -85,19 +85,64 @@ export interface SystemOneResponse {
   usage?: JevUsage;
 }
 
+// ---- Review policy ------------------------------------------------------
+
+/**
+ * What a category means for the decision.
+ *
+ * `positive` categories are the places a command may legitimately land when it
+ * looks alarming but is not a violation, such as tightening permissions or
+ * killing one named process. They exist so those commands have somewhere to go:
+ * describing the exception *inside* a negative category ("this is not that
+ * violation") measurably does not work, while giving it its own category does.
+ *
+ * Anything that is not `positive` counts as a violation. That direction is
+ * deliberate: a category added without a polarity must never weaken the check.
+ */
+export type Polarity = "negative" | "positive";
+
+export interface Category {
+  /** Stable id, sent to the model as the option name and logged as the label. */
+  id: string;
+  polarity: Polarity;
+  /** What this category covers. This is the text the model judges against. */
+  what: string;
+  /** Concrete commands that belong here, used to separate near neighbours. */
+  examples?: string[];
+}
+
+/**
+ * The review policy: the categories the model chooses between.
+ *
+ * A flat list rather than nested rules, because the model gets to pick exactly
+ * one: every category competes with every other, and the sum of the non-positive
+ * probabilities is the answer.
+ */
+export interface Policy {
+  categories: Category[];
+}
+
+/** Fill in a polarity that was left out, treating it as a violation. */
+export function polarityOf(category: Pick<Category, "polarity">): Polarity {
+  return category.polarity === "positive" ? "positive" : "negative";
+}
+
 /** Outcome of one classification, after thresholds have been applied. */
 export type Verdict = "allow" | "escalate";
 
 /** Per-question signals kept for logging and for the escalation prompt. */
 export interface DecisionSignals {
-  /** Chosen tier from the `risk` choice question, when present. */
-  tier?: string;
-  /** Confidence of the `risk` choice question, when present. */
-  tierConfidence?: number;
-  /** Probability that the command is dangerous (`danger` noul). */
-  dangerProbability?: number;
-  /** Probability that the command violates an agent principle. */
-  violatesPolicyProbability?: number;
+  /**
+   * Summed probability of every non-positive category, i.e. how likely the
+   * command does one of the things the policy says must be stopped.
+   */
+  violationMass?: number;
+  /** The category with the highest probability, for diagnosis. */
+  label?: string;
+  /** True when that label is a positive (allowed) category. */
+  labelIsPositive?: boolean;
+  /** Probability of the chosen category. */
+  labelConfidence?: number;
 }
 
 export interface Decision {
@@ -138,11 +183,7 @@ export interface ApproveConfig {
   cacheSize: number;
 
   // ---- Decision policy ----
-  thresholds: { danger: number; policy: number };
-  /** Tiers of the `risk` choice that escalate. */
-  escalateOnTiers: string[];
-  /** Minimum `risk` confidence before the tier itself escalates. */
-  minTierConfidence: number;
+  thresholds: { violation: number };
   /** What to do when a threshold is crossed. */
   action: "escalate" | "monitor" | "block";
   /** What `escalate` does when there is no UI to ask (print/JSON mode, subagents). */

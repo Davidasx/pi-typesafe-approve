@@ -1,6 +1,9 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
-import { buildQuestions } from "../src/classify.ts";
+import { OUTCOME_QUESTION, buildQuestions } from "../src/classify.ts";
+import { BUILT_IN_CATEGORIES } from "../src/policy.ts";
+
+const POLICY = { categories: [...BUILT_IN_CATEGORIES] };
 import {
   createSystemOneClient,
   normalizeResponse,
@@ -8,7 +11,7 @@ import {
   SystemOneError,
 } from "../src/systemone.ts";
 
-const questions = buildQuestions();
+const questions = buildQuestions(POLICY);
 
 function jsonResponse(body: unknown, status = 200): Response {
   return new Response(JSON.stringify(body), {
@@ -18,47 +21,48 @@ function jsonResponse(body: unknown, status = 200): Response {
 }
 
 const validBody = {
-  model: "jev-1.13.0",
+  model: "jev-1.14.0",
   answers: {
-    risk: {
+    [OUTCOME_QUESTION]: {
       type: "choice",
-      choice: "safe",
-      probabilities: { safe: 1, caution: 0, danger: 0 },
+      choice: "routine_work",
+      probabilities: Object.fromEntries(
+        [...BUILT_IN_CATEGORIES.map((c) => [c.id, c.id === "routine_work" ? 1 : 0])],
+      ),
       confidence: 1,
     },
-    danger: { type: "noul", noul: 0.02 },
-    violates_policy: { type: "noul", noul: 0.01 },
   },
   usage: { input_tokens: 531, output_tokens: 78, cost: 0.000022302 },
 };
 
 test("normalizeResponse reads a well-formed answer set", () => {
   const response = normalizeResponse(validBody, questions);
-  assert.equal(response.model, "jev-1.13.0");
-  assert.equal(response.answers.risk?.type, "choice");
+  assert.equal(response.model, "jev-1.14.0");
+  assert.equal(response.answers[OUTCOME_QUESTION]?.type, "choice");
   assert.deepEqual(response.usage, { input_tokens: 531, output_tokens: 78, cost: 0.000022302 });
 });
 
 test("normalizeResponse rejects a missing answer for a question that was asked", () => {
-  const body = { answers: { ...validBody.answers, danger: undefined } };
-  assert.throws(() => normalizeResponse(body, questions), /missing an answer for question "danger"/);
+  const body = { answers: {} };
+  assert.throws(() => normalizeResponse(body, questions), /missing an answer for question "outcome"/);
 });
 
 test("normalizeResponse rejects an out-of-range probability", () => {
   const body = {
     answers: {
-      ...validBody.answers,
-      danger: { type: "noul", noul: 1.4 },
+      [OUTCOME_QUESTION]: {
+        ...(validBody.answers[OUTCOME_QUESTION] as object),
+        probabilities: Object.fromEntries(BUILT_IN_CATEGORIES.map((c) => [c.id, 1.4])),
+      },
     },
   };
-  assert.throws(() => normalizeResponse(body, questions), /not a noul probability/);
+  assert.throws(() => normalizeResponse(body, questions), /invalid probability/);
 });
 
 test("normalizeResponse rejects a choice outside the asked options", () => {
   const body = {
     answers: {
-      ...validBody.answers,
-      risk: {
+      [OUTCOME_QUESTION]: {
         type: "choice",
         choice: "catastrophic",
         probabilities: { catastrophic: 1 },
@@ -82,18 +86,14 @@ test("the client posts the model, state, and questions to the configured endpoin
   });
 
   const response = await client.ask({ state: { command: "ls" }, questions });
-  assert.equal(response.answers.danger?.type, "noul");
+  assert.equal(response.answers[OUTCOME_QUESTION]?.type, "choice");
   assert.equal(seen?.url, "https://api.typesafe.ai/v1/systemone");
   const headers = seen?.init?.headers as Record<string, string>;
   assert.equal(headers.Authorization, "Bearer sk-secret");
   const body = JSON.parse(String(seen?.init?.body)) as Record<string, unknown>;
   assert.equal(body.model, "jev-latest");
   assert.deepEqual(body.state, { command: "ls" });
-  assert.deepEqual(Object.keys(body.questions as object).sort(), [
-    "danger",
-    "risk",
-    "violates_policy",
-  ]);
+  assert.deepEqual(Object.keys(body.questions as object), [OUTCOME_QUESTION]);
 });
 
 test("the client omits the model field when no model is configured", async () => {

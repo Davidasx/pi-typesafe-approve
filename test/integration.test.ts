@@ -11,6 +11,7 @@ import { mkdtempSync, readFileSync, statSync, writeFileSync, mkdirSync } from "n
 import { tmpdir } from "node:os";
 import { join } from "node:path";
 import type { AddressInfo } from "node:net";
+import { BUILT_IN_CATEGORIES } from "../src/policy.ts";
 
 interface Captured {
   url: string;
@@ -34,22 +35,26 @@ async function startStub(): Promise<{
       const body = JSON.parse(raw) as Captured["body"];
       captured.push({ url: req.url ?? "", authorization: req.headers.authorization, body });
 
-      const command = body.state?.command ?? "";
+      const command = (body.state as { command?: string } | undefined)?.command ?? "";
       const dangerous = /rm -rf|\/etc\/|curl .*\| sh/u.test(command);
-      const choice = dangerous ? "danger" : "safe";
       res.writeHead(200, { "content-type": "application/json" });
       res.end(
         JSON.stringify({
           model: body.model,
           answers: {
-            risk: {
+            outcome: {
               type: "choice",
-              choice,
-              probabilities: { safe: dangerous ? 0 : 1, caution: 0, danger: dangerous ? 1 : 0 },
-              confidence: 1,
+              choice: dangerous ? "irreversible_destruction" : "routine_work",
+              probabilities: Object.fromEntries(
+                BUILT_IN_CATEGORIES.map((category) => [
+                  category.id,
+                  category.id === (dangerous ? "irreversible_destruction" : "routine_work")
+                    ? 0.97
+                    : 0.03 / (BUILT_IN_CATEGORIES.length - 1),
+                ]),
+              ),
+              confidence: 0.97,
             },
-            danger: { type: "noul", noul: dangerous ? 0.93 : 0.01 },
-            violates_policy: { type: "noul", noul: dangerous ? 0.8 : 0.02 },
           },
           usage: { input_tokens: 500, output_tokens: 60, cost: 0.000021 },
         }),
@@ -149,7 +154,7 @@ test("the extension gates a real Bash tool call through a real HTTP endpoint", a
   );
   assert.equal(dangerous?.block, true);
   assert.match(dangerous?.reason ?? "", /was not run/);
-  assert.match(dangerous?.reason ?? "", /danger probability 0\.93/);
+  assert.match(dangerous?.reason ?? "", /violation=0\.99 most likely irreversible_destruction/);
 
   // Non-bash tools are never sent to the model.
   const beforeCount = stub.captured.length;
@@ -162,11 +167,7 @@ test("the extension gates a real Bash tool call through a real HTTP endpoint", a
   assert.equal(first?.url, "/v1/systemone");
   assert.equal(first?.authorization, "Bearer sk-integration");
   assert.equal(first?.body.model, "jev-latest");
-  assert.deepEqual(Object.keys(first?.body.questions ?? {}).sort(), [
-    "danger",
-    "risk",
-    "violates_policy",
-  ]);
+  assert.deepEqual(Object.keys(first?.body.questions ?? {}), ["outcome"]);
 
   // The decision log is written next to the config, without the API key.
   const log = readFileSync(join(configDir, "decisions.jsonl"), "utf8");

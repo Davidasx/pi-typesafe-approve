@@ -16,9 +16,8 @@
     "'apiKey' accepts a literal, or ${NAME} to read an environment variable.",
     "Braces are required; a bare $NAME is sent literally, exactly as written.",
     "",
-    "The rules the model judges against are NOT in this file. They live in",
-    "policy.md next to it, created from a minimal default on first run. Edit it",
-    "there; it supports ${NAME} environment expansion too."
+    "The categories the model chooses between are NOT in this file. They live in",
+    "policy.json next to it, created from the built-in set on first run."
   ],
   "enabled": true,
   "endpoint": "https://api.typesafe.ai/v1/systemone",
@@ -28,13 +27,8 @@
   "timeoutMs": 6000,
   "cacheSize": 256,
   "thresholds": {
-    "danger": 0.3,
-    "policy": 0.3
+    "violation": 0.3
   },
-  "escalateOnTiers": [
-    "danger"
-  ],
-  "minTierConfidence": 0,
   "action": "escalate",
   "noUiFallback": "block",
   "failMode": "open",

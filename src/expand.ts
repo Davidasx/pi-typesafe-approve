@@ -15,7 +15,7 @@
  * Case carries no meaning: `${HOME}` and `${home}` both name environment
  * variables. There is deliberately **no** built-in set of dynamic values such as
  * `${cwd}`. Facts like the working directory are structured fields on the
- * request `state` (`{command, working_directory, review_policy}`), so the model
+ * request `state` (`{context, command, working_directory}`), so the model
  * receives them exactly; repeating them inside the prose would be duplicate
  * information and a second thing for this extension to maintain. The environment
  * is the one expansion that earns its place, because it is already how a machine

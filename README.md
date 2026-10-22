@@ -4,9 +4,9 @@ A Pi extension that auto-approves routine Bash commands using a **System One /
 Jev decision model**, and escalates everything else to a human.
 
 Jev does not generate text. It answers typed questions about a `state` you send
-it and returns probabilities: a `choice` tier, a `noul` yes/no probability, a
-`confidence`. That makes it a good fit for one specific job — a fast, cheap
-*triage* layer in front of every shell command:
+it and returns a probability for every option of a `choice`, plus a confidence.
+That makes it a good fit for one specific job — a fast, cheap *triage* layer in
+front of every shell command:
 
 - routine commands (`ls`, `git status`, `npm ci`) pass without a prompt;
 - commands the model flags — including obfuscated ones it decodes
@@ -60,11 +60,9 @@ One field, the whole request URL:
 "model": "jev-latest",
 ```
 
-A single value rather than a base plus a path, because every deployment differs
-in both, they are never set independently, and splitting them only created a
-precedence rule to remember. A config that still carries the old `baseUrl` and
-`path` keys is reported by name (`"baseUrl" is no longer used; put the whole URL
-in "endpoint"`) rather than silently left inert.
+One value rather than a base plus a path: every deployment differs in both, they
+are never set independently, and splitting them would only add a precedence rule
+to remember.
 
 Known deployments, as of September 2026:
 
@@ -95,9 +93,8 @@ change.
 
 The braces are required. `"$TYPESAFE_API_KEY"` without them is taken at face
 value and sent as the literal bearer token `$TYPESAFE_API_KEY` — the same rule
-the policy file uses, with no second guessing. That is a deliberate choice: one
-syntax, stated in the docs and in the config comment, and if a value starts with
-`$` and is not `${NAME}` then the user meant a literal.
+`policy.json` uses, with no second guessing. One syntax, stated here and in the
+config comment: if a value starts with `$` and is not `${NAME}`, it is a literal.
 
 The failure is opaque, so it is also made visible: `/typesafe-approve status`
 reports `key=literal (! looks like a variable but is not ${TYPESAFE_API_KEY})`.
@@ -112,37 +109,31 @@ included in an error message, and never prefilled into a dialog.
 
 ```jsonc
 {
-  "thresholds": { "danger": 0.3, "policy": 0.3 },
-  "escalateOnTiers": ["danger"],
-  "minTierConfidence": 0,
+  "thresholds": { "violation": 0.3 },
   "action": "escalate",
   "noUiFallback": "block",
   "failMode": "open"
 }
 ```
 
-Every command is judged by **three independent questions**, and the **strictest
-answer wins**:
+One question. The model picks the single category from `policy.json` that best
+describes the command, and the verdict is the **summed probability of every
+category that is not positive**:
 
-1. `risk` — a `choice` over `safe` / `caution` / `danger`.
-2. `danger` — a `noul`: "would this cause irreversible data loss, weaken
-   security, or disrupt a service?"
-3. `violates_policy` — a `noul` against the review policy in `state`.
+| | |
+|---|---|
+| `violation` | the summed probability that the command does one of the things you stop |
+| stop when | `violation >= thresholds.violation` |
+| the threshold | 0.3 by default |
 
-Both primitives are needed because they disagree in both directions on a real
-minority of inputs; taking the strictest of the two recovers cases either signal
-alone misses. A live `typesafe/jev-1.13-20260917` run makes the point: for the
-obfuscated `a=rm; b='-rf'; c=/tmp/x; $a $b $c`, the tier came back `danger` at
-only **0.20** confidence — too weak to act on alone — while the two `noul`s
-returned `0.65` and `0.80`, both well clear of the threshold. Either signal by
-itself would have been the wrong call.
+Summing rather than reading the top category matters: a command can be split
+across two violations at 0.4 each with nothing individually over the line, and
+that is still more violation mass than a 0.5/0.5 split with ordinary work.
 
-The default `danger` threshold of **0.3** is deliberately low. Measured against
-a 52-command set, `p ≥ 0.3` caught ~97% of the dangerous commands **with zero
-false positives on plainly safe ones**; the cost was false positives on
-*scary-but-routine* commands (`npm ci`, `systemctl restart nginx`,
-`kubectl delete pod`). That is the right trade for a gate whose escalation is
-"ask a human", not "delete the command".
+Measured on 16 commands against the live model, the two groups do not overlap
+much: violations came back at **1.00** and ordinary work at **0.00–0.01**, so any
+threshold from 0.3 to 0.7 gives the same verdicts. The threshold is a knob for
+taste, not a delicate tuning parameter.
 
 `action` decides what crossing a threshold means:
 
@@ -188,96 +179,70 @@ Rules that must hold belong in the policy layer, where a bug cannot be a
 probability. This layer only answers the question a rule engine cannot: does
 the command's *effect* look dangerous, and does it violate the stated policy?
 
-### Policy: what the reviewer is told
+### Policy: the categories the model chooses between
 
-The rules the model judges against live in **one file**,
-`<extension config dir>/policy.md`, created from a minimal default on first run.
-There is no config key for the path and no support for splitting it across
-files: nothing else reads this text, so a redirectable path would only be a way
-to point at a file that is not there.
+One JSON file, `<extension config dir>/policy.json`, created from the built-in
+categories on first run. Each category has an `id`, a `polarity`, what it covers,
+and optional `examples`:
 
-#### A reviewer's stop-list is not the agent's rules file
+```json
+{
+  "categories": [
+    {
+      "id": "secret_exposure",
+      "polarity": "negative",
+      "what": "Reads, prints, copies, or transmits a credential, private key, token, ...",
+      "examples": ["cat ~/.ssh/id_ed25519", "env | sort"]
+    },
+    {
+      "id": "permission_tightened",
+      "polarity": "positive",
+      "what": "Makes a file less accessible than it was, on a path already the user's: chmod 600 or 700. This is a safety improvement.",
+      "examples": ["chmod 600 ~/.ssh/id_ed25519"]
+    }
+  ]
+}
+```
 
-This is the single most important thing to get right, and getting it wrong is
-what made an earlier version flag almost everything.
+- **`negative`** means doing this must stop the command.
+- **`positive`** means the command may run.
+- **A category with no `polarity` counts as negative.** Forgetting the field can
+  never weaken the check.
+- **At least one positive category is required**, otherwise every command would be
+  a violation and the file is rejected with that reason.
 
-`AGENTS.md` is written *to the agent*: "do this, don't do that", plus workflow
-preferences, tool discipline, priorities, and communication style. Feeding it in
-verbatim went wrong three ways:
+`${NAME}` is replaced by the environment variable `NAME` if it is set, in `what`
+and in every example — which is how a category names your real home directory
+without hard-coding it.
 
-- it addresses the wrong reader, so the model reads imperatives aimed at somebody
-  else;
-- it is mostly irrelevant to one shell command, which costs tokens on every
-  request and dilutes the part that matters;
-- rules like "never modify files outside the working directory" demand path
-  containment reasoning — *is `/work/a/b` inside `/work`?* — that a one-step,
-  no-scratchpad model cannot do. Faced with that, it hedges, and hedging on
-  every command means flagging everything. Measured: 10 of 17 commands in one
-  session escalated, all of them on the policy signal alone, 8 of them with the
-  tier at `safe`.
+#### Why polarities, and not exceptions in prose
 
-So the policy is written for the reviewer and says two things: what to stop, and
-what is ordinary. The second half is what keeps the false-positive rate down, and
-it is why the default is short.
+A rule and its exception in the same sentence do not work. "Absolute paths need
+approval, but tightening permissions on a file that is already yours is not this
+violation" still stops `chmod 600 ~/.ssh/id_ed25519`: the same three tokens —
+`chmod`, an absolute path, `~/.ssh` — appear in both halves, and lexical overlap
+beats the negation.
 
-#### The default is short, and only about baseline safety
+A separate **positive** category for the exception fixes it. The model never has
+to reason about a negation; it picks between two descriptions that are each true
+on their own, and `chmod 600` lands on `permission_tightened` while
+`chmod -R 777 /usr` still lands on `security_weakened`.
 
-It is five lines, 509 characters, and states only harm that is harm under *any*
-working style: unrecoverable data loss, leaked secrets, weakened security or
-granted access, taking a machine or service down, and running code downloaded in
-the same command. Nothing about where temp files go, about `sudo`, or about git
-— those are preferences rather than safety, and a default that enforced them
-would be wrong for a large share of users. Add your own rules at the end; it is
-plain text and it is yours.
+So if a command keeps getting stopped and you believe it is fine, do not add a
+"this is not a violation" clause to a category — **give it a positive category of
+its own**. That is the lever that works.
 
-It ends with one short sentence — "Anything else is fine." — and not the long
-list of non-reasons an earlier version carried. That sentence earns its place:
-without some such signal the reviewer hedges on ordinary commands. But once the
-rules got short there was nothing left for the enumeration to correct, so it
-shrank with them. A test pins the length and asserts the default mentions none of
-`sudo`, `git`, `/tmp`, or `AGENTS.md` at all: length is paid on every request,
-and a mandated working style is a false positive for everyone who does not share
-it.
+#### The built-in categories
 
-#### Writing your own: two rules that measurably matter
+Eight stop categories — unrecoverable destruction, secret exposure, weakened
+security, code fetched from elsewhere and run, privilege escalation, service
+disruption, writes outside the allowed paths, misplaced scratch files — and three
+allowed ones: `permission_tightened`, `scoped_process_control`, and
+`routine_work`, which is the catch-all for ordinary development.
 
-Both come from measuring against the real model, and both are about removing the
-need for reasoning the model cannot do.
-
-**Name literal prefixes, not abstract areas.** "Never modify files outside the
-working directory" demands path containment — *is `/work/a/b` inside `/work`?* —
-which a one-step, no-scratchpad model cannot answer, so it hedges and flags
-everything. Naming `${HOME}/.pi` as a concrete prefix, and stating the
-string-level test in words (a path with no leading slash and no tilde is inside
-the working directory), removes the question entirely. Measured: `echo x >
-src/new-file.txt` scored 0.71, flagged, under the abstract wording, and 0.07,
-allowed, once the rule was stated as prefixes plus the relative-path case.
-
-**State the correspondence when a command may use a variable.** A policy that
-names `${PI_TMPDIR}` gets the real path, but a command writes `$PI_TMPDIR` — a
-form the model cannot equate with the absolute path it was handed. One sentence
-saying the same directory may appear through the environment variable
-`PI_TMPDIR` took that compliant command from 0.74, flagged, to 0.27, allowed.
-
-#### `${NAME}` expansion
-
-The policy supports exactly one syntax:
-
-| Written | Meaning |
-|---|---|
-| `${NAME}` | the environment variable `NAME`, if set and non-empty |
-| anything else | literal, `$` included |
-
-No escape syntax is needed, because a `$` that is not followed by `{NAME}` is
-already literal. Case carries no meaning. There are deliberately **no** built-in
-dynamic values such as `${cwd}`: facts like the working directory are structured
-fields on the request `state`, so the model receives them exactly, and repeating
-them in the prose would be duplicate information and a second thing to maintain.
-`${PI_TMPDIR}` and `${HOME}` work because they are environment variables.
-
-An unresolved `${NAME}` is left as written so a typo stays visible, and
-`/typesafe-approve policy` prints the exact text the model receives along with
-any unresolved reference or habitual bare `$word`.
+Nothing in the built-ins mandates a working style beyond the paths rule, which
+names `${HOME}/.pi` and `${HOME}/.agents` explicitly. There is no rule about
+`/tmp` beyond the scratch category, and none about git.
 
 ### Commands
 
@@ -286,7 +251,7 @@ any unresolved reference or habitual bare `$word`.
 | `/typesafe-approve` | The settings screen. |
 | `/typesafe-approve status` | One-line status. |
 | `/typesafe-approve path` | Print the config path. |
-| `/typesafe-approve policy` | Print the exact policy text sent to the model, with expansion notes. |
+| `/typesafe-approve policy` | Print the categories the model chooses between. |
 | `/typesafe-approve on` / `off` | Toggle the gate. |
 | `/typesafe-approve test <command>` | Classify one command and show the raw signals and verdict. |
 
@@ -298,22 +263,22 @@ way you already expect:
 
 ```text
 typesafe-approve
-  enabled · configured · key ${OPENROUTER_API_KEY} · danger >= 0.3, policy >= 0.3 …
+  enabled · configured · key ${TYPESAFE_API_KEY} · violation >= 0.3 …
   https://openrouter.ai/api/alpha/decisions · model ~typesafe/jev-latest
 
   Settings     Every option with its current value.
   Policy       The rules the model judges against.
-  Diagnostics  Test the endpoint, reload from disk, show file paths.
+  Diagnostics  Test the endpoint, show file paths.
   Close
 ```
 
 `Settings` is one list, not a menu you descend into: **every option is visible at
-once with its current value**. Enumerated options change in place on Enter (the
-action, the no-UI fallback, the failure mode, the log toggles, the tier set);
-everything else opens a single-field editor, and an invalid number is reported
-without leaving the screen. `Policy` shows the exact text the model receives,
-opens it in a full editor, and can restore the built-in default after asking.
-`Diagnostics` runs a real request against the endpoint and reloads from disk.
+once with its current value**. Enumerated options change in place on Enter (on/off,
+the action, the no-UI fallback, the failure mode, the two log toggles); everything
+else opens a single-field editor, and an invalid number is reported without leaving
+the screen. `Policy` lists the categories as they are sent, opens `policy.json` in
+a full editor, and can restore the built-in set after asking. `Diagnostics` runs a
+real request against the endpoint and shows the file paths.
 
 No screen ever renders the API key: it is shown as `${NAME}` or `literal`, and
 the key editor is deliberately not prefilled, because a prefill would put the
@@ -326,7 +291,7 @@ Everything applies by itself; there is no reload step.
 | You change | It applies |
 |---|---|
 | anything through `/typesafe-approve` | immediately, to the next command |
-| `policy.md` in an editor | immediately, to the next command |
+| `policy.json` in an editor | immediately, to the next command |
 | `config.json` in an editor | when the gate next runs, or when the settings screen re-renders |
 
 The two files are handled differently on purpose, because they can fail
@@ -356,9 +321,10 @@ moment", not "the check silently stopped running". An edit made *through* the
 settings screen bypasses all of this and is adopted unconditionally, because it is
 a deliberate action and must always take effect.
 
-One related consequence: `policy.md` is never overwritten once it exists, even if
-you empty it. An empty policy file means the built-in default is used and reported,
-rather than your in-progress rewrite being replaced.
+One related consequence: `policy.json` is never overwritten once it exists, even if
+you empty it. An empty or unparseable policy file means the built-in categories are
+used in memory and reported as such, rather than your in-progress edit being
+replaced.
 
 ## Architecture
 
@@ -368,9 +334,9 @@ src/
 ├── gate.ts         The tool_call handler: model → cache → action
 ├── systemone.ts    HTTP client, response normalization, secret redaction
 ├── menu.ts         the /typesafe-approve settings screen
-├── policy.ts       the policy file, its minimal default, and its expansion (read per request)
+├── policy.ts       the category file, built-in categories, validation (read per request)
 ├── expand.ts       ${NAME} expansion, one rule, no escapes
-├── classify.ts     state + questions construction, thresholds, verdict
+├── classify.ts     state, the one question, violation mass, verdict
 ├── config.ts       config schema, load/save, $ENV resolution, endpoint building
 ├── log.ts          JSONL decision log, self-trimming at 20 MB
 └── types.ts        shared request/response/decision types
@@ -443,8 +409,9 @@ one you have, so either way the block reason and the prompt quote the exact text
 that was judged — nothing is hidden behind a rewrite.
 
 The trade-off in one line: first = approve what was asked for, last = approve
-what runs. rtk's rewrites are semantically preserving by design, so "first" is
-the recommended order, and it is the order this project's `settings.json` uses.
+what runs. Since rtk's rewrites are semantically preserving by design, **listing
+this package first is the recommended order** — it judges the command the agent
+actually wrote.
 
 ### Request flow
 
@@ -455,13 +422,13 @@ bash tool call
       │
       ├─ endpoint not configured ─────────────────────────────────► pass through
       │
-      ├─ cache hit (sha256 of endpoint+model+state) ────────────► replay verdict
+      ├─ cache hit (sha256 of endpoint+model+state+categories) ──► replay verdict
       │
       ├─ POST {model, state, questions}
-      │     state     = { command, working_directory, review_policy }
-      │     questions = risk (choice) + danger (noul) + violates_policy (noul)
+      │     state     = { context, command, working_directory }
+      │     question  = outcome (choice over every category in policy.json)
       │
-      ├─ strictest signal wins, thresholds applied ─────────────► allow / escalate
+      ├─ sum the non-positive probabilities, compare to the threshold ─► allow / escalate
       │
       └─ network failure ──────────────────────────────────────► failMode
 ```
@@ -473,7 +440,7 @@ cost stays near zero on the commands you run most.
 ## Tests
 
 ```bash
-npm test          # 103 tests: unit + an end-to-end test against a local stub
+npm test          # 108 tests: unit + an end-to-end test against a local stub
 npm run typecheck
 npm run check     # both
 ```
@@ -490,12 +457,13 @@ log.
   scratchpad, and it sees only the command text. It cannot tell a legitimate
   domain from a malicious one, and it cannot know what a glob expands to or
   whether a `staging` namespace is disposable. Those facts belong in the policy
-  layer (a path or command rule), or in `policy.md` — not in a pattern list
-  bolted onto a probabilistic gate.
+  layer (a path or command rule), or in `policy.json` as a category — not in a
+  pattern list bolted onto a probabilistic gate.
 - It **over-flags scary-but-routine operations.** That is why the default action
   is "ask the user", not "block".
-- Confidence is informative, not a guarantee. Tune thresholds against your own
-  commands using `/typesafe-approve test <command>` and `action: "monitor"`.
+- Confidence is informative, not a guarantee. Tune against your own commands with
+  `/typesafe-approve test <command>` and `action: "monitor"`, then promote a
+  repeated false stop to a positive category rather than raising the threshold.
 - `decisions.jsonl` is capped at 20 MB, so older history is dropped; each call costs one input-token
   charge on your account.
 

@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { DEFAULT_POLICY } from "../src/policy.ts";
+import { BUILT_IN_CATEGORIES } from "../src/policy.ts";
 import {
   createApproveMenu,
   describeKey,
@@ -25,16 +25,16 @@ function state(overrides: Partial<ApproveConfig> = {}): ApproveMenuState {
   return {
     config: { ...DEFAULT_CONFIG, ...overrides },
     policy: {
-      text: DEFAULT_POLICY.trim(),
-      path: "/agent/extensions/pi-typesafe-approve/policy.md",
+      categories: [...BUILT_IN_CATEGORIES],
+      path: "/agent/extensions/pi-typesafe-approve/policy.json",
       created: false,
       fallback: false,
-      unresolved: [],
-      bare: [],
+      problems: [],
+      enabled: true,
     },
     paths: {
       config: "/agent/extensions/pi-typesafe-approve/config.json",
-      policy: "/agent/extensions/pi-typesafe-approve/policy.md",
+      policy: "/agent/extensions/pi-typesafe-approve/policy.json",
       log: "/agent/extensions/pi-typesafe-approve/decisions.jsonl",
     },
     configured: true,
@@ -83,9 +83,10 @@ function harness(overrides: Partial<ApproveConfig> = {}, options: {
     writePolicy: (text) => h.policies?.push(text),
     restoreDefaultPolicy: () => {
       h.restores = (h.restores ?? 0) + 1;
-      h.policies?.push(DEFAULT_POLICY);
+      h.policies?.push(JSON.stringify({ categories: BUILT_IN_CATEGORIES }));
     },
     connectionReport: async () => "report",
+    readPolicyText: () => "{}",
   };
   h.deps = deps;
 
@@ -139,10 +140,7 @@ test("the settings screen lists every option, enums with values and text without
       "apiKey",
       "timeoutMs",
       "cacheSize",
-      "thresholds.danger",
-      "thresholds.policy",
-      "escalateOnTiers",
-      "minTierConfidence",
+      "thresholds.violation",
       "action",
       "noUiFallback",
       "failMode",
@@ -166,7 +164,6 @@ test("every enumerated item's stored value is reachable from its labels", async 
     ["action", "monitor", "monitor"],
     ["noUiFallback", "allow", "allow"],
     ["failMode", "closed", "closed"],
-    ["escalateOnTiers", "danger and caution", ["danger", "caution"]],
   ];
   for (const [itemId, label, expected] of cases) {
     const h = harness();
@@ -189,9 +186,7 @@ test("text rows transition to the matching editor screen", () => {
     apiKey: "edit-api-key",
     timeoutMs: "edit-timeout",
     cacheSize: "edit-cache",
-    "thresholds.danger": "edit-danger",
-    "thresholds.policy": "edit-policy-threshold",
-    minTierConfidence: "edit-tier-confidence",
+    "thresholds.violation": "edit-violation",
   };
   const h = harness();
   for (const [itemId, expected] of Object.entries(cases)) {
@@ -214,7 +209,7 @@ test("text fields are written trimmed", async () => {
 
 test("an out-of-range number is refused with a message and changes nothing", async () => {
   const h = harness();
-  await h.run("apply-danger", { value: "7" });
+  await h.run("apply-violation", { value: "7" });
   await h.run("apply-timeout", { value: "abc" });
   assert.deepEqual(h.updates, []);
   assert.equal(h.notices.length, 2);
@@ -225,11 +220,11 @@ test("an out-of-range number is refused with a message and changes nothing", asy
 
 test("a valid number is written, and thresholds keep their sibling", async () => {
   const h = harness();
-  await h.run("apply-danger", { value: "0.45" });
-  assert.deepEqual(h.updates.at(-1), { thresholds: { danger: 0.45, policy: DEFAULT_CONFIG.thresholds.policy } });
+  await h.run("apply-violation", { value: "0.45" });
+  assert.deepEqual(h.updates.at(-1), { thresholds: { violation: 0.45 } });
 
-  await h.run("apply-policy-threshold", { value: "0" });
-  assert.deepEqual(h.updates.at(-1), { thresholds: { danger: 0.45, policy: 0 } });
+  await h.run("apply-violation", { value: "0" });
+  assert.deepEqual(h.updates.at(-1), { thresholds: { violation: 0 } });
 
   await h.run("apply-cache", { value: "0" });
   assert.deepEqual(h.updates.at(-1), { cacheSize: 0 });
@@ -311,12 +306,12 @@ test("the policy screen reports unresolved and brace-less references", () => {
   const h = harness();
   h.current = {
     ...h.current,
-    policy: { ...h.current.policy, created: true, unresolved: ["MISSING"], bare: ["HOME"] },
+    policy: { ...h.current.policy, created: true, fallback: true, problems: ["the file is unreadable"] },
   };
   const lines = ((screen(h, "policy") as unknown as { lines?: readonly string[] }).lines ?? []).join("\n");
-  assert.match(lines, /MISSING/);
-  assert.match(lines, /HOME/);
+  assert.match(lines, /unreadable/);
   assert.match(lines, /Created on first run/);
+  assert.match(lines, /stop, \d+ allow/);
 });
 
 // ── diagnostics ────────────────────────────────────────────────────────────
@@ -332,7 +327,7 @@ test("the status lines describe rather than dump", () => {
   const line = statusLine(state({ apiKey: SECRET, model: "jev-latest" }));
   assert.ok(!line.includes(SECRET));
   assert.match(line, /configured/);
-  assert.match(line, /policy\.md/);
+  assert.match(line, /policy\.json/);
 
   assert.equal(
     endpointLine({ ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/x", model: "m" }),

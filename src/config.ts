@@ -30,9 +30,7 @@ export const DEFAULT_CONFIG: ApproveConfig = {
   timeoutMs: 6000,
   cacheSize: 256,
 
-  thresholds: { danger: 0.3, policy: 0.3 },
-  escalateOnTiers: ["danger"],
-  minTierConfidence: 0,
+  thresholds: { violation: 0.3 },
   action: "escalate",
   noUiFallback: "block",
   failMode: "open",
@@ -129,12 +127,7 @@ function normalize(raw: Record<string, unknown>): ApproveConfig {
     headers: stringRecord(raw.headers),
     timeoutMs: positiveInt(raw.timeoutMs, d.timeoutMs),
     cacheSize: nonNegativeInt(raw.cacheSize, d.cacheSize),
-    thresholds: {
-      danger: unitInterval(thresholds.danger, d.thresholds.danger),
-      policy: unitInterval(thresholds.policy, d.thresholds.policy),
-    },
-    escalateOnTiers: stringArray(raw.escalateOnTiers, d.escalateOnTiers),
-    minTierConfidence: unitInterval(raw.minTierConfidence, d.minTierConfidence),
+    thresholds: { violation: unitInterval(thresholds.violation, d.thresholds.violation) },
     action: oneOf(raw.action, ["escalate", "monitor", "block"], d.action),
     noUiFallback: oneOf(raw.noUiFallback, ["block", "allow"], d.noUiFallback),
     failMode: oneOf(raw.failMode, ["open", "closed"], d.failMode),
@@ -175,8 +168,6 @@ function collectProblems(raw: Record<string, unknown>): string[] {
   expect("timeoutMs", isNumber, "must be a number");
   expect("cacheSize", isNumber, "must be a number");
   expect("thresholds", isRecord, "must be an object");
-  expect("escalateOnTiers", isArray, "must be an array of strings");
-  expect("minTierConfidence", isNumber, "must be a number");
   expect("action", (v) => isString(v) && ["escalate", "monitor", "block"].includes(v as string), 'must be "escalate", "monitor", or "block"');
   expect("noUiFallback", (v) => isString(v) && ["block", "allow"].includes(v as string), 'must be "block" or "allow"');
   expect("failMode", (v) => isString(v) && ["open", "closed"].includes(v as string), 'must be "open" or "closed"');
@@ -184,7 +175,7 @@ function collectProblems(raw: Record<string, unknown>): string[] {
   expect("debug", isBool, "must be a boolean");
 
   if (isRecord(raw.thresholds)) {
-    for (const key of ["danger", "policy"] as const) {
+    for (const key of ["violation"] as const) {
       const value = raw.thresholds[key];
       if (value !== undefined && (typeof value !== "number" || !Number.isFinite(value))) {
         problems.push(`"thresholds.${key}" must be a number`);
@@ -344,11 +335,6 @@ function oneOf<T extends string>(value: unknown, allowed: readonly T[], fallback
   return typeof value === "string" && (allowed as readonly string[]).includes(value) ? (value as T) : fallback;
 }
 
-function stringArray(value: unknown, fallback: string[]): string[] {
-  if (!Array.isArray(value)) return fallback;
-  const items = value.filter((item): item is string => typeof item === "string");
-  return items.length === value.length ? items : fallback;
-}
 
 function stringRecord(value: unknown): Record<string, string> {
   if (!isRecord(value)) return {};

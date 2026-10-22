@@ -44,6 +44,8 @@ export interface MenuDeps {
   writePolicy(text: string): void;
   /** Put the built-in default policy back. */
   restoreDefaultPolicy(): void;
+  /** The policy file exactly as it is on disk, for the editor. */
+  readPolicyText(): string;
   /** One-line result of talking to the endpoint, for the diagnostics screen. */
   connectionReport(): Promise<string>;
 }
@@ -59,9 +61,8 @@ export type ApproveScreenId =
   | "edit-api-key"
   | "edit-timeout"
   | "edit-cache"
-  | "edit-danger"
-  | "edit-policy-threshold"
-  | "edit-tier-confidence";
+  | "edit-violation"
+  ;
 
 export type ApproveActionId =
   | "set-enum"
@@ -71,9 +72,8 @@ export type ApproveActionId =
   | "apply-api-key"
   | "apply-timeout"
   | "apply-cache"
-  | "apply-danger"
-  | "apply-policy-threshold"
-  | "apply-tier-confidence"
+  | "apply-violation"
+
   | "policy-show"
   | "policy-edit"
   | "policy-restore"
@@ -89,15 +89,12 @@ const EDIT_SCREENS: Record<string, ApproveScreenId> = {
   apiKey: "edit-api-key",
   timeoutMs: "edit-timeout",
   cacheSize: "edit-cache",
-  "thresholds.danger": "edit-danger",
-  "thresholds.policy": "edit-policy-threshold",
-  minTierConfidence: "edit-tier-confidence",
+  "thresholds.violation": "edit-violation",
 };
 
 /** Enumerated settings: the label shown, and the value it stores. */
 const ENUM_VALUES: Record<string, Record<string, unknown>> = {
   enabled: { On: true, Off: false },
-  escalateOnTiers: { danger: ["danger"], "danger and caution": ["danger", "caution"] },
   action: { escalate: "escalate", monitor: "monitor", block: "block" },
   noUiFallback: { block: "block", allow: "allow" },
   failMode: { open: "open", closed: "closed" },
@@ -161,7 +158,7 @@ export function createApproveMenu(
             {
               id: "diagnostics",
               label: "Diagnostics",
-              description: "Test the endpoint, reload from disk, show file paths.",
+              description: "Test the endpoint and show file paths.",
               to: "diagnostics",
             },
             { id: "close", label: "Close", close: true },
@@ -189,10 +186,12 @@ export function createApproveMenu(
             textItem("apiKey", "API key", "A literal, or ${NAME} to read an environment variable.", describeKey(config.apiKey)),
             textItem("timeoutMs", "Request timeout", "Milliseconds before the check gives up.", `${config.timeoutMs} ms`),
             textItem("cacheSize", "Cache size", "Decisions remembered per session; 0 disables.", String(config.cacheSize)),
-            textItem("thresholds.danger", "Danger threshold", "0..1; lower flags more commands.", String(config.thresholds.danger)),
-            textItem("thresholds.policy", "Policy threshold", "0..1; lower flags more commands.", String(config.thresholds.policy)),
-            enumItem("escalateOnTiers", "Tiers that escalate", "Which risk tiers stop the command.", config.escalateOnTiers.join(" and "), "escalateOnTiers"),
-            textItem("minTierConfidence", "Minimum tier confidence", "0..1; how sure the tier must be to act on it.", String(config.minTierConfidence)),
+            textItem(
+              "thresholds.violation",
+              "Threshold",
+              "0..1; stop the command when the summed violation probability reaches this.",
+              String(config.thresholds.violation),
+            ),
             enumItem("action", "Action on a trigger", "What happens when a threshold is crossed.", config.action, "action"),
             enumItem("noUiFallback", "Without a UI", "What escalating does when nobody can be asked.", config.noUiFallback, "noUiFallback"),
             enumItem("failMode", "If the model is unreachable", "The check cannot run.", config.failMode, "failMode"),
@@ -209,15 +208,30 @@ export function createApproveMenu(
           title: "Policy",
           lines: [
             `File: ${policy.path}`,
+            `${countCategories(policy, "negative")} stop, ${countCategories(policy, "positive")} allow`,
             policy.created ? "Created on first run from the built-in default." : "",
-            policy.fallback ? "Unreadable or empty; the built-in default is in use." : "",
-            policy.unresolved.length ? `Unresolved, left as written: ${policy.unresolved.join(", ")}` : "",
-            policy.bare.length ? `Needs braces to expand: ${policy.bare.join(", ")}` : "",
+            policy.fallback ? "Unusable; the built-in categories are in use." : "",
+            ...policy.problems,
           ].filter(Boolean),
           items: [
-            { id: "show", label: "Show the policy sent to the model", action: "policy-show" },
-            { id: "edit", label: "Edit the policy", description: "Opens the full text in an editor.", action: "policy-edit" },
-            { id: "restore", label: "Restore the built-in default", description: "Replaces the file.", action: "policy-restore" },
+            {
+              id: "show",
+              label: "Show the categories sent to the model",
+              description: "What the model actually chooses between.",
+              action: "policy-show",
+            },
+            {
+              id: "edit",
+              label: "Edit the categories",
+              description: "Opens policy.json in an editor.",
+              action: "policy-edit",
+            },
+            {
+              id: "restore",
+              label: "Restore the built-in categories",
+              description: "Replaces the file.",
+              action: "policy-restore",
+            },
           ],
           hint: "back",
         };
@@ -225,11 +239,20 @@ export function createApproveMenu(
 
       "policy-view": () => {
         const { policy } = deps.getState();
+        const content = policy.categories
+          .map((category) => {
+            const polarity = category.polarity === "positive" ? "allow" : "STOP ";
+            const examples = category.examples?.length
+              ? `\n    examples: ${category.examples.join("; ")}`
+              : "";
+            return `${polarity} ${category.id}\n    ${category.what}${examples}`;
+          })
+          .join("\n\n");
         return {
           kind: "review",
-          title: "Policy sent to the model",
-          lines: [`${policy.text.length} characters · ${policy.path}`],
-          content: policy.text,
+          title: "Categories sent to the model",
+          lines: [`${policy.categories.length} categories · ${policy.path}`],
+          content,
           confirm: { id: "done", label: "Back", action: "policy-back" },
         };
       },
@@ -271,9 +294,16 @@ export function createApproveMenu(
         ),
       "edit-timeout": () => input("Request timeout (ms)", "6000", "apply-timeout", String(deps.getState().config.timeoutMs)),
       "edit-cache": () => input("Cache size", "256", "apply-cache", String(deps.getState().config.cacheSize)),
-      "edit-danger": () => input("Danger threshold (0..1)", "0.3", "apply-danger", String(deps.getState().config.thresholds.danger)),
-      "edit-policy-threshold": () => input("Policy threshold (0..1)", "0.3", "apply-policy-threshold", String(deps.getState().config.thresholds.policy)),
-      "edit-tier-confidence": () => input("Minimum tier confidence (0..1)", "0", "apply-tier-confidence", String(deps.getState().config.minTierConfidence)),
+      "edit-violation": () =>
+        input(
+          "Threshold (0..1)",
+          "0.3",
+          "apply-violation",
+          String(deps.getState().config.thresholds.violation),
+          "Currently: " +
+            String(deps.getState().config.thresholds.violation) +
+            ". Lower stops more commands.",
+        ),
     },
 
     actions: {
@@ -314,27 +344,16 @@ export function createApproveMenu(
         applyNumber(ctx, value, { min: 100, max: 600_000, label: "Timeout" }, (timeoutMs) => ({ timeoutMs })),
       "apply-cache": ({ ctx, value }) =>
         applyNumber(ctx, value, { min: 0, max: 100_000, label: "Cache size" }, (cacheSize) => ({ cacheSize })),
-      "apply-danger": ({ ctx, value }) =>
-        applyNumber(ctx, value, { min: 0, max: 1, label: "Danger threshold" }, (danger) => ({
-          thresholds: { ...deps.getState().config.thresholds, danger },
+      "apply-violation": ({ ctx, value }) =>
+        applyNumber(ctx, value, { min: 0, max: 1, label: "Threshold" }, (violation) => ({
+          thresholds: { violation },
         })),
-      "apply-policy-threshold": ({ ctx, value }) =>
-        applyNumber(ctx, value, { min: 0, max: 1, label: "Policy threshold" }, (policy) => ({
-          thresholds: { ...deps.getState().config.thresholds, policy },
-        })),
-      "apply-tier-confidence": ({ ctx, value }) =>
-        applyNumber(
-          ctx,
-          value,
-          { min: 0, max: 1, label: "Minimum tier confidence" },
-          (minTierConfidence) => ({ minTierConfidence }),
-        ),
 
       "policy-show": () => ({ kind: "to", screen: "policy-view" }),
       "policy-back": () => back,
       "policy-edit": async ({ ctx }) => {
-        const current = deps.getState().policy.text;
-        const edited = await ctx.ui.editor("Policy sent to the model", current);
+        const current = deps.readPolicyText();
+        const edited = await ctx.ui.editor("policy.json", current);
         if (edited === undefined) return stay;
         deps.writePolicy(edited);
         ctx.ui.notify("Policy saved.", "info");
@@ -365,6 +384,10 @@ export function createApproveMenu(
       },
     },
   };
+}
+
+function countCategories(policy: LoadedPolicy, polarity: "negative" | "positive"): number {
+  return policy.categories.filter((category) => category.polarity === polarity).length;
 }
 
 // ── screen helpers ─────────────────────────────────────────────────────────
@@ -445,9 +468,9 @@ export function statusLine(state: ApproveMenuState): string {
     config.enabled ? "enabled" : "disabled",
     state.configured ? "configured" : "not configured",
     `key ${describeKey(config.apiKey)}`,
-    `danger >= ${config.thresholds.danger}, policy >= ${config.thresholds.policy}`,
+    `violation >= ${config.thresholds.violation}`,
     `on trigger: ${config.action}`,
-    `policy: ${policy.path.split(/[/\\]/u).at(-1) ?? "policy.md"}`,
+    `policy: ${policy.path.split(/[/\\]/u).at(-1) ?? "policy.json"} (${policy.categories.length})`,
   ].join(" · ");
 }
 

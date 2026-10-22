@@ -15,8 +15,8 @@ import type {
   ExtensionContext,
 } from "@earendil-works/pi-coding-agent";
 import { getAgentDir } from "@earendil-works/pi-coding-agent";
-import { statSync, writeFileSync } from "node:fs";
-import { buildQuestions, buildState, decide } from "./classify.ts";
+import { readFileSync, statSync, writeFileSync } from "node:fs";
+import { buildQuestions, buildState, decide, negativeSet } from "./classify.ts";
 import {
   apiKeyBareReferenceWarning,
   apiKeyEnvReferences,
@@ -33,7 +33,14 @@ import { createApproveMenu, type ApproveMenuState } from "./menu.ts";
 import { runMenu } from "@narumitw/pi-tui-kit";
 import { createGate, type GateUi } from "./gate.ts";
 import { createFileLogger, trimLogFile, type DecisionLogger } from "./log.ts";
-import { DEFAULT_POLICY, loadPolicy, policyPath, type LoadedPolicy } from "./policy.ts";
+import {
+  BUILT_IN_CATEGORIES,
+  ROUTINE_CATEGORY,
+  loadPolicy,
+  policyPath,
+  serializePolicy,
+  type LoadedPolicy,
+} from "./policy.ts";
 import { createSystemOneClient, redact, type SystemOneClient } from "./systemone.ts";
 import type { ApproveConfig, LoadedConfig } from "./types.ts";
 
@@ -165,8 +172,9 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     getState: menuState,
     update: (patch: Partial<ApproveConfig>) => persist({ ...getConfig(), ...patch }),
     writePolicy: writePolicyFile,
-    restoreDefaultPolicy: () => writePolicyFile(DEFAULT_POLICY),
+    restoreDefaultPolicy: () => writePolicyFile(serializePolicy(BUILT_IN_CATEGORIES)),
     connectionReport: () => connectionReport(),
+    readPolicyText: () => readFileSync(policyPath(policyContext), "utf8"),
   };
 
   /** One line describing whether the endpoint answers. Shared with the menu. */
@@ -178,9 +186,11 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     try {
       const client = getClient(config);
       const started = Date.now();
+      const loaded = readPolicy();
+      const policy = { categories: loaded.categories };
       const response = await client.ask({
-        state: buildState("ls -la", sessionCwd, readPolicy().text),
-        questions: buildQuestions(),
+        state: buildState("ls -la", sessionCwd),
+        questions: buildQuestions(policy),
       });
       return `pi-typesafe-approve: ${response.model ?? config.model} answered OK in ${Date.now() - started} ms (${summarizeUsage(response.usage)}).`;
     } catch (error) {
@@ -190,7 +200,7 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
 
   const gate = createGate({
     getConfig,
-    getPolicy: () => readPolicy().text,
+    getPolicy: () => ({ categories: readPolicy().categories }),
     getCwd: () => sessionCwd,
     isConfigured,
     ask: (request, signal, config) => getClient(config).ask(request, signal ? { signal } : {}),
@@ -287,9 +297,9 @@ function statusLine(config: ApproveConfig, policy: LoadedPolicy, configFile: str
     `enabled=${config.enabled}`,
     endpointLine(config),
     `key=${describeKey(config.apiKey, keyEnv)}`,
-    `danger>=${config.thresholds.danger} policy>=${config.thresholds.policy}`,
+    `violation>=${config.thresholds.violation}`,
     `action=${config.action} noUiFallback=${config.noUiFallback} failMode=${config.failMode}`,
-    `policy=${policy.path}${policy.created ? " (created)" : ""}${policy.fallback ? " (built-in default)" : ""}`,
+    `policy=${policy.path} (${policy.categories.length} categories: ${policy.categories.filter((c) => c.polarity === "negative").length} stop, ${policy.categories.filter((c) => c.polarity === "positive").length} allow)${policy.created ? " (created)" : ""}${policy.fallback ? " (built-in default)" : ""}`,
     `config=${configFile}`,
   ].join(" · ");
 }
@@ -301,19 +311,21 @@ function describeKey(apiKey: string, envReferences: readonly string[]): string {
   return warning ? `literal (! ${warning})` : "literal";
 }
 
-/** Print the exact policy text the model receives, with its expansion notes. */
+/** Print the categories the model chooses between, as they are actually sent. */
 function showPolicy(ctx: ExtensionCommandContext, loaded: LoadedPolicy): void {
   const notes: string[] = [`policy file: ${loaded.path}`];
   if (loaded.created) notes.push("created on first run from the built-in default");
-  if (loaded.fallback) notes.push("unreadable; using the built-in default in memory");
-  if (loaded.unresolved.length > 0) notes.push(`unresolved, left as written: ${loaded.unresolved.join(", ")}`);
-  if (loaded.bare.length > 0) {
-    notes.push(`not expanded, this syntax needs braces: ${loaded.bare.map((n) => `$${n}`).join(", ")}`);
-  }
+  if (loaded.fallback) notes.push("unusable; the built-in categories are in use in memory");
+  for (const problem of loaded.problems) notes.push(problem);
   ctx.ui.notify(notes.join(" · "), loaded.fallback ? "warning" : "info");
 
-  const text = loaded.text;
-  ctx.ui.notify(text.length > 4000 ? `${text.slice(0, 4000)}\n…` : text, "info");
+  const lines = loaded.categories.map((category) => {
+    const polarity = category.polarity === "positive" ? "allow" : "STOP ";
+    const examples = category.examples?.length ? ` — e.g. ${category.examples.slice(0, 2).join("; ")}` : "";
+    return `${polarity} ${category.id}: ${category.what}${examples}`;
+  });
+  const total = lines.join("\n");
+  ctx.ui.notify(total.length > 4000 ? `${total.slice(0, 4000)}\n…` : total, "info");
 }
 
 async function runManualTest(
@@ -336,11 +348,12 @@ async function runManualTest(
     return;
   }
   try {
+    const policy = { categories: deps.policy().categories };
     const response = await deps.getClient(config).ask({
-      state: buildState(command, deps.cwd(), deps.policy().text),
-      questions: buildQuestions(),
+      state: buildState(command, deps.cwd()),
+      questions: buildQuestions(policy),
     });
-    const decision = decide(response, config);
+    const decision = decide(response, config, negativeSet(policy));
     ctx.ui.notify(
       `pi-typesafe-approve: ${decision.verdict} ${JSON.stringify(decision.signals)}` +
         `${decision.reasons.length ? ` — ${decision.reasons.join("; ")}` : ""}`,
