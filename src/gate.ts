@@ -52,6 +52,7 @@ import {
   buildState,
   decide,
   negativeSet,
+  outcomeNote,
   signalsOf,
   verdictLine,
 } from "./classify.ts";
@@ -257,12 +258,11 @@ export function createGate(deps: GateDeps) {
       return undefined;
     }
 
-    const summary = signalsOf(decision);
-
     if (action === "monitor" || action === "allow-no-ui") {
-      const why = action === "monitor" ? "monitor" : "escalate, no UI to ask";
-      ui.notify(`pi-typesafe-approve (${why}): ${summary} — ${oneLine(command)}`, "warning");
-      log(decision, action === "monitor" ? "monitor" : "no-ui-allow", extra);
+      const monitor = action === "monitor";
+      const note = outcomeNote(monitor ? "monitor" : "no-ui", command, decision);
+      if (note !== undefined) ui.notify(note, "warning");
+      log(decision, monitor ? "monitor" : "no-ui-allow", extra);
       return undefined;
     }
 
@@ -278,6 +278,12 @@ export function createGate(deps: GateDeps) {
       // read off the command themselves, which is why it is the part that stays.
       const approved = await ui.confirm(`Run this command?\n${verdictLine(decision)}`, "");
       log(decision, approved ? "allow" : "block", extra);
+      // Recorded either way: a human made this decision, and the transcript should
+      // show which one and for what, so a later reading can tell the two apart.
+      ui.notify(
+        outcomeNote(approved ? "approved" : "declined", command, decision) ?? verdictLine(decision),
+        "warning",
+      );
       return approved
         ? undefined
         : {
@@ -291,6 +297,12 @@ export function createGate(deps: GateDeps) {
     }
 
     log(decision, "block", extra);
+    // Nobody was asked, so this line is how the transcript distinguishes a command
+    // the gate stopped on its own from one a human turned down.
+    ui.notify(
+      outcomeNote("blocked", command, decision) ?? blockedReason(decision, command, rule),
+      "warning",
+    );
     return { block: true, reason: blockedReason(decision, command, rule) };
   }
 }
@@ -319,13 +331,6 @@ export function escalationAction(
   if (ui.hasUI) return "prompt";
   return config.noUiFallback === "allow" ? "allow-no-ui" : "block";
 }
-
-/** Collapse a possibly multi-line command into one bounded log/prompt line. */
-function oneLine(value: string): string {
-  const single = value.replace(/\s+/gu, " ").trim();
-  return single.length > 160 ? `${single.slice(0, 160)}…` : single;
-}
-
 
 function readCommand(input: unknown): string | undefined {
   if (typeof input !== "object" || input === null) return undefined;

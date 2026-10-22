@@ -185,6 +185,46 @@ export function summarize(command: string, decision: Decision): string {
 }
 
 /**
+ * One line recording what actually happened to a command, for the transcript.
+ *
+ * Written with a stable leading phrase per outcome so that a later search for
+ * "declined", "approved", or "not asked" finds the moments a human was involved
+ * and the moments nobody was. The command is included because the transcript is
+ * read top to bottom long afterwards, when "which command" is the first question
+ * and the tool row above may have scrolled far away.
+ *
+ * Only outcomes worth reading are recorded: an automatic allow returns nothing,
+ * because one line per command would bury the interesting ones.
+ */
+export function outcomeNote(
+  outcome: "approved" | "declined" | "blocked" | "monitor" | "no-ui" | "allow",
+  command: string,
+  decision: Decision,
+): string | undefined {
+  const verdict = verdictLine(decision);
+  const what = truncate(command, 120);
+  switch (outcome) {
+    case "approved":
+      return `pi-typesafe-approve · approved by the user · ${verdict} — ${what}`;
+    case "declined":
+      return `pi-typesafe-approve · declined by the user · ${verdict} — ${what}`;
+    case "blocked":
+      return `pi-typesafe-approve · blocked automatically · ${verdict} — ${what}`;
+    case "monitor":
+      // Reached only for a command the gate already judged a stop, so every one of
+      // these is worth a line: under `monitor` it is the only trace that the gate
+      // would have intervened.
+      return `pi-typesafe-approve · monitor, ran anyway · ${verdict} — ${what}`;
+    case "no-ui":
+      // "Wanted to stop, nobody to ask" is the most consequential non-decision in
+      // the set, so it is never suppressed.
+      return `pi-typesafe-approve · no UI to ask, ran anyway · ${verdict} — ${what}`;
+    case "allow":
+      return undefined;
+  }
+}
+
+/**
  * The decision without the command, for the confirmation prompt.
  *
  * A stopped command reads as `<category> <probability> ≥ <limit>`; the category is
