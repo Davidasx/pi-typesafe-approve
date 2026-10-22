@@ -52,6 +52,14 @@ import { isRecord } from "./config.ts";
 
 export const POLICY_FILE_NAME = "policy.json";
 
+/**
+ * The one `state` field sent exactly as written.
+ *
+ * Everything else in the file is a value and gets expanded; this is prose, and
+ * prose about how a value is spelled cannot survive expansion.
+ */
+export const CONTEXT_FIELD = "context";
+
 /** The category a command lands in when it does nothing on the list. */
 export const ROUTINE_CATEGORY = "routine_work";
 
@@ -402,8 +410,15 @@ export function parseStateTemplate(
 /**
  * Expand a template for one request.
  *
- * `command` is substituted from the call, not from the environment: the model must
- * always see the command that is actually about to run.
+ * Two rules, and they are the whole contract:
+ *
+ * - **`context` is sent verbatim.** It is prose addressed to the model, and the one
+ *   field where a sentence about the syntax has to survive: writing "the working
+ *   directory may also be written ${PWD}" anywhere that gets expanded turns into a
+ *   duplicated path, and the sentence stops meaning anything.
+ * - **Every other value is expanded**, including `${command}`, which is substituted
+ *   from the call rather than the environment so the model always reviews the
+ *   command that will actually run.
  */
 export function renderState(
   template: StateTemplate,
@@ -411,16 +426,15 @@ export function renderState(
   cwd: string,
   env: Readonly<Record<string, string | undefined>>,
 ): Record<string, string> {
+  const withoutCommand = Object.fromEntries(
+    Object.entries(env).filter(([name]) => name !== "command"),
+  );
   const rendered: Record<string, string> = {};
   for (const [key, value] of Object.entries(template)) {
-    // `${command}` is substituted before any environment lookup, and the lookup
-    // can never override it: the model must review the command that will run, so
-    // an environment variable that happens to be called `command` is irrelevant.
-    const substituted = value.replaceAll("${command}", command);
-    rendered[key] = expandVariables(substituted, {
-      env: Object.fromEntries(Object.entries(env).filter(([name]) => name !== "command")),
-      cwd,
-    });
+    rendered[key] =
+      key === CONTEXT_FIELD
+        ? value
+        : expandVariables(value.replaceAll("${command}", command), { env: withoutCommand, cwd });
   }
   return rendered;
 }

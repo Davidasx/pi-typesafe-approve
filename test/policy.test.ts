@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   BUILT_IN_CATEGORIES,
   DEFAULT_STATE,
+  renderState,
   POLICY_FILE_NAME,
   ROUTINE_CATEGORY,
   loadPolicy,
@@ -167,6 +168,27 @@ test("the default file carries the state template", () => {
   const written = JSON.parse(readFileSync(loaded.path, "utf8")) as { state?: Record<string, string> };
   assert.deepEqual(written.state, DEFAULT_STATE);
   assert.deepEqual(loaded.state, DEFAULT_STATE);
+});
+
+test("context is sent verbatim while every other value is expanded", () => {
+  // Prose about the syntax has to survive: expanding it would turn a sentence that
+  // names two spellings into the same path twice.
+  const ctx = context({ HOME: "/home/u", SCRATCH: "/s" });
+  const rendered = renderState(
+    {
+      context: "writes inside $(pwd -P), which a command may also spell ${PWD}",
+      command: "${command}",
+      cwd: "$(pwd -P)",
+      scratch: "${SCRATCH}",
+    },
+    "ls",
+    "/home/u/proj",
+    ctx.env,
+  );
+  assert.equal(rendered.context, "writes inside $(pwd -P), which a command may also spell ${PWD}");
+  assert.equal(rendered.command, "ls");
+  assert.equal(rendered.cwd, "/home/u/proj");
+  assert.equal(rendered.scratch, "/s");
 });
 
 test("a custom state template is kept and a missing one falls back", () => {

@@ -242,7 +242,10 @@ the scratch directory" from prose into a fact:
 }
 ```
 
-Values are flat strings. Three substitutions happen, and nothing else:
+Values are flat strings. **`context` is the one field sent exactly as written**,
+because it is prose addressed to the model and a sentence naming a syntax cannot
+survive being expanded. Every other value is expanded, in `state` and in each
+category's `what` and `examples`. Three substitutions happen, and nothing else:
 
 | Written | Becomes |
 |---|---|
