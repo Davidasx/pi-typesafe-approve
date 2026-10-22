@@ -32,7 +32,7 @@ interface HarnessOptions {
 }
 
 function harness(options: HarnessOptions = {}) {
-  const config: ApproveConfig = { ...DEFAULT_CONFIG, baseUrl: "https://example.test", model: "jev", ...options.config };
+  const config: ApproveConfig = { ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/systemone", model: "jev", ...options.config };
   const log: unknown[] = [];
   const notes: string[] = [];
   const prompts: string[] = [];

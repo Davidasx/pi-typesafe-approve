@@ -33,21 +33,34 @@ test("loadConfig reports invalid JSON without throwing", () => {
 
 test("validateConfig merges values and reports wrong types", () => {
   const { config, problems } = validateConfig({
-    baseUrl: "https://api.typesafe.ai",
-    path: "/v1/systemone",
+    endpoint: "https://a.test/v1/systemone",
     model: "jev-latest",
     apiKey: "${TYPESAFE_API_KEY}",
     thresholds: { danger: 0.3, policy: 0.2 },
     timeoutMs: 5000,
     enabled: "yes",
   });
-  assert.equal(config.baseUrl, "https://api.typesafe.ai");
+  assert.equal(config.endpoint, "https://a.test/v1/systemone");
   assert.equal(config.thresholds.danger, 0.3);
   assert.equal(config.thresholds.policy, 0.2);
   assert.equal(config.timeoutMs, 5000);
   // "enabled" was the wrong type, so the default survives and a problem is listed.
   assert.equal(config.enabled, DEFAULT_CONFIG.enabled);
   assert.deepEqual(problems, ['"enabled" must be a boolean']);
+});
+
+test("validateConfig names the keys that were merged away", () => {
+  const { config, problems } = validateConfig({
+    baseUrl: "https://api.typesafe.ai",
+    path: "/v1/systemone",
+    model: "jev-latest",
+  });
+  // Without this the gate would be inert and the user would have nothing to read.
+  assert.equal(config.endpoint, "");
+  assert.equal(problems.length, 2);
+  assert.match(problems[0] ?? "", /"baseUrl" is no longer used/);
+  assert.match(problems[1] ?? "", /"path" is no longer used/);
+  assert.match(problems[0] ?? "", /"endpoint"/);
 });
 
 test("validateConfig rejects an out-of-range threshold silently by falling back", () => {
@@ -89,33 +102,28 @@ test("resolveApiKey fails when nothing is configured", () => {
   assert.equal(resolveApiKey("", {}).ok, false);
 });
 
-test("resolveEndpoint prefers an absolute endpoint, then baseUrl + path", () => {
-  const base = { ...DEFAULT_CONFIG, baseUrl: "https://api.typesafe.ai/" };
-  assert.equal(resolveEndpoint(base), "https://api.typesafe.ai/v1/systemone");
-
-  // OpenRouter's Decisions surface lives on a different path, no preset needed.
+test("resolveEndpoint returns the configured URL, trimmed", () => {
   assert.equal(
-    resolveEndpoint({ ...base, path: "/api/alpha/decisions" }),
-    "https://api.typesafe.ai/api/alpha/decisions",
+    resolveEndpoint({ ...DEFAULT_CONFIG, endpoint: "https://api.typesafe.ai/v1/systemone" }),
+    "https://api.typesafe.ai/v1/systemone",
   );
-
+  // Any URL shape is fine: the user supplies the whole thing.
   assert.equal(
-    resolveEndpoint({ ...base, endpoint: "http://localhost:8080/custom" }),
-    "http://localhost:8080/custom",
+    resolveEndpoint({ ...DEFAULT_CONFIG, endpoint: "  https://openrouter.ai/api/alpha/decisions  " }),
+    "https://openrouter.ai/api/alpha/decisions",
   );
-
   assert.throws(() => resolveEndpoint(DEFAULT_CONFIG), /no endpoint configured/);
 });
 
 test("saveConfig round-trips and creates the directory with owner-only permissions", () => {
   const dir = mkdtempSync(join(tmpdir(), "tsa-"));
   const file = configPath(dir);
-  const config = { ...DEFAULT_CONFIG, baseUrl: "https://example.test", model: "jev-latest" };
+  const config = { ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/systemone", model: "jev-latest" };
   saveConfig(file, config);
 
   const reloaded = loadConfig(file);
   assert.equal(reloaded.ok, true);
-  assert.equal(reloaded.config.baseUrl, "https://example.test");
+  assert.equal(reloaded.config.endpoint, "https://a.test/v1/systemone");
   assert.equal(reloaded.config.model, "jev-latest");
   assert.ok(readFileSync(file, "utf8").endsWith("\n"));
 });
@@ -123,7 +131,7 @@ test("saveConfig round-trips and creates the directory with owner-only permissio
 // ── adopting a config that changed on disk ─────────────────────────────────
 
 test("shouldAdoptConfig refuses a file that does not parse", () => {
-  const current = { ...DEFAULT_CONFIG, baseUrl: "https://a.test", model: "m", apiKey: "k" };
+  const current = { ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/systemone", model: "m", apiKey: "k" };
   const verdict = shouldAdoptConfig({
     current,
     currentUsable: true,
@@ -140,7 +148,7 @@ test("shouldAdoptConfig adopts a usable configuration", () => {
     current: DEFAULT_CONFIG,
     currentUsable: false,
     candidateParsed: true,
-    candidate: { ...DEFAULT_CONFIG, baseUrl: "https://b.test", model: "m", apiKey: "k" },
+    candidate: { ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/systemone", model: "m", apiKey: "k" },
     candidateUsable: true,
   });
   assert.deepEqual(verdict, { adopt: true });
@@ -148,7 +156,7 @@ test("shouldAdoptConfig adopts a usable configuration", () => {
 
 test("shouldAdoptConfig adopts a deliberate disable", () => {
   const verdict = shouldAdoptConfig({
-    current: { ...DEFAULT_CONFIG, baseUrl: "https://a.test", model: "m", apiKey: "k" },
+    current: { ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/systemone", model: "m", apiKey: "k" },
     currentUsable: true,
     candidateParsed: true,
     candidate: { ...DEFAULT_CONFIG, enabled: false },
@@ -164,7 +172,7 @@ test("shouldAdoptConfig adopts anything while nothing is configured yet", () => 
     current: DEFAULT_CONFIG,
     currentUsable: false,
     candidateParsed: true,
-    candidate: { ...DEFAULT_CONFIG, baseUrl: "https://c.test" },
+    candidate: { ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/systemone" },
     candidateUsable: false,
   });
   assert.deepEqual(verdict, { adopt: true });
@@ -174,7 +182,7 @@ test("shouldAdoptConfig refuses to trade a working config for an unusable one", 
   // The case that matters: a half-written file parses to the defaults, and the
   // defaults leave the checker inert. Keeping the working one fails safe.
   const verdict = shouldAdoptConfig({
-    current: { ...DEFAULT_CONFIG, baseUrl: "https://a.test", model: "m", apiKey: "k" },
+    current: { ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/systemone", model: "m", apiKey: "k" },
     currentUsable: true,
     candidateParsed: true,
     candidate: DEFAULT_CONFIG,

@@ -124,9 +124,7 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
 
   function getClient(config: ApproveConfig): SystemOneClient {
     const signature = JSON.stringify([
-      config.endpoint ?? "",
-      config.baseUrl,
-      config.path,
+      config.endpoint,
       config.model,
       config.headers,
       config.timeoutMs,

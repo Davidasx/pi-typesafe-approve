@@ -53,29 +53,35 @@ commands, and the trim reads only the 10 MB it keeps rather than the whole file.
 
 ### Endpoint
 
-Two ways to point at a deployment:
+One field, the whole request URL:
 
-| Field | Meaning |
-|---|---|
-| `baseUrl` + `path` | Normal case: `baseUrl` is e.g. `https://api.typesafe.ai`, `path` is e.g. `/v1/systemone`. |
-| `endpoint` | Absolute URL. Wins over `baseUrl` + `path`; use it when the path is unusual. |
+```jsonc
+"endpoint": "https://api.typesafe.ai/v1/systemone",
+"model": "jev-latest",
+```
 
-Then `model` and `apiKey`. Known deployments, as of September 2026:
+A single value rather than a base plus a path, because every deployment differs
+in both, they are never set independently, and splitting them only created a
+precedence rule to remember. A config that still carries the old `baseUrl` and
+`path` keys is reported by name (`"baseUrl" is no longer used; put the whole URL
+in "endpoint"`) rather than silently left inert.
 
-| Deployment | `baseUrl` | `path` | `model` |
-|---|---|---|---|
-| TypeSafe official | `https://api.typesafe.ai` | `/v1/systemone` | `jev-latest` |
-| OpenRouter, Decisions API | `https://openrouter.ai` | `/api/alpha/decisions` | `~typesafe/jev-latest` |
-| OpenRouter, System One API | `https://openrouter.ai` | `/api/v1/systemone` | `typesafe/jev-1.13` |
-| OpenJEV | `https://api.openjev.sh` | `/v1/systemone` | `openjev` |
-| A local relay (von / laya / edgejev) | your host | your path | your model |
+Known deployments, as of September 2026:
+
+| Deployment | `endpoint` | `model` |
+|---|---|---|
+| TypeSafe official | `https://api.typesafe.ai/v1/systemone` | `jev-latest` |
+| OpenRouter, Decisions API | `https://openrouter.ai/api/alpha/decisions` | `~typesafe/jev-latest` |
+| OpenRouter, System One API | `https://openrouter.ai/api/v1/systemone` | `typesafe/jev-1.13` |
+| OpenJEV | `https://api.openjev.sh/v1/systemone` | `openjev` |
+| A local relay (von / laya / edgejev) | your host and path | your model |
 
 The two OpenRouter surfaces differ exactly here: the **Decisions API** lives on
 `/api/alpha/decisions` and names the model `~typesafe/jev-latest`, while the
 **System One API** lives on `/api/v1/systemone` and names it
 `typesafe/jev-1.13`. The request body (`model`, `state`, `questions`) and the
 response body (`answers`, `usage`) are the same on both, and on TypeSafe and
-OpenJEV too, so no code path is provider-specific — only these three strings
+OpenJEV too, so no code path is provider-specific — only these two strings
 change.
 
 ### API key
@@ -467,7 +473,7 @@ cost stays near zero on the commands you run most.
 ## Tests
 
 ```bash
-npm test          # 101 tests: unit + an end-to-end test against a local stub
+npm test          # 103 tests: unit + an end-to-end test against a local stub
 npm run typecheck
 npm run check     # both
 ```

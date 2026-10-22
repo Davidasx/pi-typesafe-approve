@@ -319,9 +319,7 @@ function hashRequest(config: ApproveConfig, state: StructuredValue): string {
   // The endpoint and model are part of the key because a different model can
   // legitimately answer the same state differently.
   const material = JSON.stringify({
-    endpoint: config.endpoint ?? "",
-    baseUrl: config.baseUrl,
-    path: config.path,
+    endpoint: config.endpoint,
     model: config.model,
     state,
   });

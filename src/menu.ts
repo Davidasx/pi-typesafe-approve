@@ -54,8 +54,7 @@ export type ApproveScreenId =
   | "policy"
   | "policy-view"
   | "diagnostics"
-  | "edit-base-url"
-  | "edit-path"
+  | "edit-endpoint"
   | "edit-model"
   | "edit-api-key"
   | "edit-timeout"
@@ -67,8 +66,7 @@ export type ApproveScreenId =
 export type ApproveActionId =
   | "set-enum"
   | "open-edit"
-  | "apply-base-url"
-  | "apply-path"
+  | "apply-endpoint"
   | "apply-model"
   | "apply-api-key"
   | "apply-timeout"
@@ -86,8 +84,7 @@ export type ApproveActionId =
 
 /** Which input screen each editable text setting opens. */
 const EDIT_SCREENS: Record<string, ApproveScreenId> = {
-  baseUrl: "edit-base-url",
-  path: "edit-path",
+  endpoint: "edit-endpoint",
   model: "edit-model",
   apiKey: "edit-api-key",
   timeoutMs: "edit-timeout",
@@ -182,8 +179,12 @@ export function createApproveMenu(
           lines: ["Enter changes enumerated options in place; others open an editor."],
           items: [
             enumItem("enabled", "Enabled", "Run the check at all.", bool(config.enabled), "enabled"),
-            textItem("baseUrl", "Base URL", "e.g. https://api.typesafe.ai", config.baseUrl || "(unset)"),
-            textItem("path", "Request path", "e.g. /v1/systemone, /api/alpha/decisions", config.path || "(empty)"),
+            textItem(
+              "endpoint",
+              "Endpoint",
+              "The full request URL, path included.",
+              config.endpoint || "(unset)",
+            ),
             textItem("model", "Model", "e.g. jev-latest, ~typesafe/jev-latest", config.model || "(unset)"),
             textItem("apiKey", "API key", "A literal, or ${NAME} to read an environment variable.", describeKey(config.apiKey)),
             textItem("timeoutMs", "Request timeout", "Milliseconds before the check gives up.", `${config.timeoutMs} ms`),
@@ -248,8 +249,15 @@ export function createApproveMenu(
         };
       },
 
-      "edit-base-url": () => input("Base URL", "https://api.typesafe.ai", "apply-base-url", deps.getState().config.baseUrl),
-      "edit-path": () => input("Request path", "/v1/systemone", "apply-path", deps.getState().config.path),
+      "edit-endpoint": () =>
+        input(
+          "Endpoint",
+          "https://api.typesafe.ai/v1/systemone",
+          "apply-endpoint",
+          deps.getState().config.endpoint,
+          "The full request URL, including the path. Currently: " +
+            (deps.getState().config.endpoint || "(unset)"),
+        ),
       "edit-model": () => input("Model", "jev-latest", "apply-model", deps.getState().config.model),
       "edit-api-key": () =>
         input(
@@ -283,12 +291,8 @@ export function createApproveMenu(
         return screen ? { kind: "to", screen } : stay;
       },
 
-      "apply-base-url": ({ ctx, value }) => {
-        deps.update({ baseUrl: (value ?? "").trim() });
-        return flagConfiguration(ctx, deps.getState());
-      },
-      "apply-path": ({ ctx, value }) => {
-        deps.update({ path: (value ?? "").trim() });
+      "apply-endpoint": ({ ctx, value }) => {
+        deps.update({ endpoint: (value ?? "").trim() });
         return flagConfiguration(ctx, deps.getState());
       },
       "apply-model": ({ ctx, value }) => {

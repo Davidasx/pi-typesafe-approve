@@ -117,13 +117,15 @@ export interface Decision {
 export interface ApproveConfig {
   enabled: boolean;
 
-  // ---- Endpoint (no presets: every field is user-supplied) ----
-  /** Base URL, e.g. `https://api.typesafe.ai`. */
-  baseUrl: string;
-  /** Path appended to `baseUrl`, e.g. `/v1/systemone`, or `/api/alpha/decisions`. */
-  path: string;
-  /** Absolute endpoint URL. When set, wins over `baseUrl` + `path`. */
-  endpoint?: string;
+  // ---- Endpoint (no presets: the URL is user-supplied) ----
+  /**
+   * The full request URL, e.g. `https://api.typesafe.ai/v1/systemone`.
+   *
+   * One value rather than a base plus a path: every known deployment differs in
+   * both, they are never set independently, and splitting them only created a
+   * precedence rule to remember.
+   */
+  endpoint: string;
   /** Model identifier, e.g. `jev-latest`, `~typesafe/jev-latest`, `typesafe/jev-1.13`. */
   model: string;
   /** Literal key or an environment reference such as `$TYPESAFE_API_KEY`. */

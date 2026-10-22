@@ -22,8 +22,7 @@ export const LOG_FILE_NAME = "decisions.jsonl";
 export const DEFAULT_CONFIG: ApproveConfig = {
   enabled: true,
 
-  baseUrl: "",
-  path: "/v1/systemone",
+  endpoint: "",
   model: "",
   apiKey: "",
   headers: {},
@@ -124,9 +123,7 @@ function normalize(raw: Record<string, unknown>): ApproveConfig {
   const thresholds = isRecord(raw.thresholds) ? raw.thresholds : {};
   return {
     enabled: bool(raw.enabled, d.enabled),
-    baseUrl: str(raw.baseUrl, d.baseUrl),
-    path: str(raw.path, d.path),
-    ...(typeof raw.endpoint === "string" ? { endpoint: raw.endpoint } : {}),
+    endpoint: str(raw.endpoint, d.endpoint),
     model: str(raw.model, d.model),
     apiKey: str(raw.apiKey, d.apiKey),
     headers: stringRecord(raw.headers),
@@ -163,9 +160,15 @@ function collectProblems(raw: Record<string, unknown>): string[] {
   const isArray = (v: unknown): boolean => Array.isArray(v);
 
   expect("enabled", isBool, "must be a boolean");
-  expect("baseUrl", isString, "must be a string");
-  expect("path", isString, "must be a string");
   expect("endpoint", isString, "must be a string");
+  // Named explicitly rather than left to the generic "unknown key" silence: a
+  // config carried over from the split keys would otherwise leave the gate inert
+  // with nothing to explain it.
+  for (const merged of ["baseUrl", "path"] as const) {
+    if (Object.hasOwn(raw, merged)) {
+      problems.push(`"${merged}" is no longer used; put the whole URL in "endpoint" (e.g. "https://api.typesafe.ai/v1/systemone")`);
+    }
+  }
   expect("model", isString, "must be a string");
   expect("apiKey", isString, "must be a string");
   expect("headers", isRecord, "must be an object of string values");
@@ -215,20 +218,6 @@ export function saveConfig(path: string, config: ApproveConfig): void {
  *
  * An unset `${NAME}` *is* an error, because a braced reference is unambiguous:
  * it must fail loudly rather than send an empty bearer token.
- *
- * - `${NAME}` — the environment variable `NAME`,
- * - anything else without a `$` — the literal key,
- * - anything else containing a `$` — an error.
- *
- * Rejecting the bare `$NAME` form rather than expanding it matters: if `$NAME`
- * were treated as a literal, a misconfigured file would send the six-character
- * string `$NAME` as a bearer token and the request would fail with an opaque
- * 401 instead of saying what is wrong. Refusing any stray `$` in a literal key
- * is a deliberate trade — real keys do not contain one — in exchange for never
- * sending a token that was obviously meant to be a variable.
- *
- * An unset or empty reference is an error rather than an empty bearer token, for
- * the same reason: it must fail loudly, not silently send no credentials.
  */
 export function resolveApiKey(
   value: string,
@@ -281,7 +270,6 @@ export function apiKeyBareReferenceWarning(value: string): string | undefined {
     : 'contains "$" but is not ${NAME}; sending it as a literal';
 }
 
-/** Build the request endpoint from config. Throws when nothing is configured. */
 /**
  * Whether a config that was re-read from disk may replace the one in memory.
  *
@@ -320,22 +308,13 @@ export function shouldAdoptConfig(input: {
   };
 }
 
+/** The configured request URL. Throws when nothing is configured. */
 export function resolveEndpoint(config: ApproveConfig): string {
-  if (config.endpoint && config.endpoint.trim()) {
-    return config.endpoint.trim();
+  const endpoint = config.endpoint.trim();
+  if (!endpoint) {
+    throw new Error('no endpoint configured: set "endpoint" to the full request URL, e.g. "https://api.typesafe.ai/v1/systemone"');
   }
-  const base = config.baseUrl.trim();
-  if (!base) {
-    throw new Error(
-      'no endpoint configured: set "baseUrl" (and "path"), or set "endpoint" to a full URL',
-    );
-  }
-  const trimmedBase = base.replace(/\/+$/u, "");
-  const path = config.path.trim();
-  if (!path || path === "/") {
-    return trimmedBase;
-  }
-  return `${trimmedBase}${path.startsWith("/") ? path : `/${path}`}`;
+  return endpoint;
 }
 
 // ── primitive coercion ────────────────────────────────────────────────────

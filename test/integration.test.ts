@@ -100,8 +100,7 @@ test("the extension gates a real Bash tool call through a real HTTP endpoint", a
     join(configDir, "config.json"),
     JSON.stringify({
       enabled: true,
-      baseUrl: stub.url,
-      path: "/v1/systemone",
+      endpoint: `${stub.url}/v1/systemone`,
       model: "jev-latest",
       apiKey: "${TSA_TEST_KEY}",
       action: "block",

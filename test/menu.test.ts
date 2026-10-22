@@ -134,8 +134,7 @@ test("the settings screen lists every option, enums with values and text without
     items.map((item) => item.id),
     [
       "enabled",
-      "baseUrl",
-      "path",
+      "endpoint",
       "model",
       "apiKey",
       "timeoutMs",
@@ -185,8 +184,7 @@ test("an unknown label changes nothing", async () => {
 
 test("text rows transition to the matching editor screen", () => {
   const cases: Record<string, ApproveScreenId> = {
-    baseUrl: "edit-base-url",
-    path: "edit-path",
+    endpoint: "edit-endpoint",
     model: "edit-model",
     apiKey: "edit-api-key",
     timeoutMs: "edit-timeout",
@@ -206,9 +204,12 @@ test("text rows transition to the matching editor screen", () => {
 
 test("text fields are written trimmed", async () => {
   const h = harness();
-  await h.run("apply-base-url", { value: "  https://example.test  " });
+  await h.run("apply-endpoint", { value: "  https://example.test/v1/systemone  " });
   await h.run("apply-model", { value: " jev-latest " });
-  assert.deepEqual(h.updates, [{ baseUrl: "https://example.test" }, { model: "jev-latest" }]);
+  assert.deepEqual(h.updates, [
+    { endpoint: "https://example.test/v1/systemone" },
+    { model: "jev-latest" },
+  ]);
 });
 
 test("an out-of-range number is refused with a message and changes nothing", async () => {
@@ -333,6 +334,9 @@ test("the status lines describe rather than dump", () => {
   assert.match(line, /configured/);
   assert.match(line, /policy\.md/);
 
-  assert.equal(endpointLine({ ...DEFAULT_CONFIG, baseUrl: "https://a.test", path: "/v1/x", model: "m" }), "https://a.test/v1/x · model m");
+  assert.equal(
+    endpointLine({ ...DEFAULT_CONFIG, endpoint: "https://a.test/v1/x", model: "m" }),
+    "https://a.test/v1/x · model m",
+  );
   assert.equal(endpointLine(DEFAULT_CONFIG), "(no endpoint configured) · model (unset)");
 });
