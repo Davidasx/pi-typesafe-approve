@@ -40,14 +40,36 @@
 
 import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { dirname, join } from "node:path";
-import { expandVariables } from "./expand.ts";
-import { polarityOf, type Category, type Policy, type Polarity } from "./types.ts";
+import { expandVariables, findUnsupported } from "./expand.ts";
+import {
+  polarityOf,
+  type Category,
+  type Policy,
+  type Polarity,
+  type StateTemplate,
+} from "./types.ts";
 import { isRecord } from "./config.ts";
 
 export const POLICY_FILE_NAME = "policy.json";
 
 /** The category a command lands in when it does nothing on the list. */
 export const ROUTINE_CATEGORY = "routine_work";
+
+/**
+ * The `state` used when the policy file does not define one.
+ *
+ * `command` and `working_directory` are the two things the model cannot infer and
+ * must have: what is being judged, and where. A policy that wants more — the
+ * scratch directory, a repository name, whether the tree is dirty — adds it to
+ * its own `state` template, because only the user knows which extra facts exist
+ * on their machine.
+ */
+export const DEFAULT_STATE: StateTemplate = Object.freeze({
+  context:
+    "One shell command that an AI coding agent wants to run on the user's own machine is being reviewed before it runs. Decide what it would do.",
+  command: "${command}",
+  working_directory: "$(pwd -P)",
+});
 
 /** Built-in categories, used when no policy file exists yet. */
 export const BUILT_IN_CATEGORIES: readonly Category[] = Object.freeze([
@@ -97,8 +119,23 @@ export const BUILT_IN_CATEGORIES: readonly Category[] = Object.freeze([
   {
     id: "write_outside_allowed",
     polarity: "negative",
-    what: "Creates, changes, moves, or deletes an absolute path, or a path starting with a tilde, that is not under ${HOME}/.pi and not under ${HOME}/.agents. Tightening permissions on a file that is already the user's is not this, and neither is writing through a relative path or into the scratch directory.",
-    examples: ["echo x > ~/Desktop/notes.txt", "echo x > /etc/hosts", "rm -rf /var/lib/data"],
+    what: "Creates, changes, moves, or deletes a file outside the two places this agent may write: the current working directory, and the scratch directory. A relative path is inside the working directory; an absolute path or one starting with a tilde is not, unless it is under ${HOME}/.pi or ${HOME}/.agents, which are the agent's own directories. Tightening permissions on a file that is already the user's is not this.",
+    examples: [
+      "echo x > ~/Desktop/notes.txt",
+      "echo x > /etc/hosts",
+      "rm -rf /var/lib/data",
+      "cp build/out ~/backup/out",
+    ],
+  },
+  {
+    id: "scripted_file_edit",
+    polarity: "negative",
+    what: "Edits a file in place with a script instead of the agent's file-editing tools: sed -i, perl -pi, awk with an in-place flag, or an interpreter one-liner that opens a file for writing. Edits must go through the tools so the change can be reviewed as a diff. A purely mechanical, rule-based rewrite is the exception and is not this; neither is reading a file to extract something.",
+    examples: [
+      "sed -i 's/old/new/' src/index.ts",
+      "perl -pi -e 's/a/b/g' config.yml",
+      "python3 - <<'PY' … Path('x').write_text(...) … PY",
+    ],
   },
   {
     id: "scratch_misplaced",
@@ -121,7 +158,7 @@ export const BUILT_IN_CATEGORIES: readonly Category[] = Object.freeze([
   {
     id: ROUTINE_CATEGORY,
     polarity: "positive",
-    what: "Ordinary development work: reading files anywhere, writing or creating files through a relative path or anywhere under ${HOME}/.pi, creating or deleting temporary files in the scratch directory, installing, upgrading, or removing project dependencies, restarting a service, deleting regenerable build output, caches, or dependencies, running tests, builds, or formatters, and any git command that is not a force-push or a hard reset.",
+    what: "Ordinary development work: reading files anywhere, creating or editing files inside the working directory through the file-editing tools, creating or deleting temporary files in the scratch directory, installing, upgrading, or removing project dependencies, restarting a service, deleting regenerable build output, caches, or dependencies, running tests, builds, formatters, or a one-off script that computes something and prints it, and any git command that is not a force-push or a hard reset.",
     examples: [
       "ls -la",
       "npm ci",
@@ -152,6 +189,8 @@ export interface LoadedPolicy {
   problems: string[];
   /** Whether the categories change how a command is judged. */
   enabled: boolean;
+  /** The `state` template, unexpanded: expansion happens per request. */
+  state: StateTemplate;
 }
 
 export function policyPath(context: Pick<PolicyContext, "configDir">): string {
@@ -173,7 +212,7 @@ export function loadPolicy(context: PolicyContext): LoadedPolicy {
   let created = false;
   if (text.trim() === "" && !existsSync(path)) {
     created = createDefaultPolicy(path);
-    if (created) text = JSON.stringify({ categories: BUILT_IN_CATEGORIES }, null, 2);
+    if (created) text = serializePolicy(BUILT_IN_CATEGORIES);
   }
 
   if (text.trim() === "") {
@@ -181,6 +220,7 @@ export function loadPolicy(context: PolicyContext): LoadedPolicy {
     // leave the file alone: it may be a policy someone is midway through writing.
     return {
       categories: expandCategories(BUILT_IN_CATEGORIES, context.env),
+      state: DEFAULT_STATE,
       path,
       created,
       fallback: true,
@@ -193,6 +233,7 @@ export function loadPolicy(context: PolicyContext): LoadedPolicy {
   if (!parsed.ok) {
     return {
       categories: expandCategories(BUILT_IN_CATEGORIES, context.env),
+      state: DEFAULT_STATE,
       path,
       created,
       fallback: true,
@@ -203,6 +244,7 @@ export function loadPolicy(context: PolicyContext): LoadedPolicy {
 
   return {
     categories: expandCategories(parsed.categories, context.env),
+    state: parsed.state ?? DEFAULT_STATE,
     path,
     created,
     fallback: false,
@@ -220,7 +262,7 @@ export function loadPolicy(context: PolicyContext): LoadedPolicy {
 function createDefaultPolicy(path: string): boolean {
   try {
     mkdirSync(dirname(path), { recursive: true, mode: 0o700 });
-    writeFileSync(path, JSON.stringify({ categories: BUILT_IN_CATEGORIES }, null, 2) + "\n", {
+    writeFileSync(path, serializePolicy(BUILT_IN_CATEGORIES), {
       encoding: "utf8",
       mode: 0o600,
       flag: "wx",
@@ -232,7 +274,7 @@ function createDefaultPolicy(path: string): boolean {
 }
 
 export type ParseResult =
-  | { ok: true; categories: Category[] }
+  | { ok: true; categories: Category[]; state?: StateTemplate }
   | { ok: false; reason: string };
 
 /**
@@ -304,7 +346,83 @@ export function parsePolicy(text: string): ParseResult {
     };
   }
 
+  if (raw.state !== undefined) {
+    const state = parseStateTemplate(raw.state);
+    if (!state.ok) return state;
+    return { ok: true, categories, state: state.template };
+  }
+
   return { ok: true, categories };
+}
+
+/**
+ * Validate a `state` template.
+ *
+ * Only flat string values are accepted. Anything nested would need its own rules
+ * for where references are expanded and where `command` could be substituted, and
+ * a state the caller cannot read at a glance is a state whose prompt is a
+ * surprise.
+ */
+export function parseStateTemplate(
+  raw: unknown,
+): { ok: true; template: StateTemplate } | { ok: false; reason: string } {
+  if (!isRecord(raw)) {
+    return { ok: false, reason: '"state" must be an object of string values' };
+  }
+  const entries = Object.entries(raw);
+  if (entries.length === 0) {
+    return { ok: false, reason: '"state" is empty, so the request would carry no context' };
+  }
+  const template: StateTemplate = {};
+  for (const [key, value] of entries) {
+    if (key.trim() === "") {
+      return { ok: false, reason: '"state" has an empty key' };
+    }
+    if (typeof value !== "string") {
+      return { ok: false, reason: `"state.${key}" must be a string` };
+    }
+    const unsupported = findUnsupported(value);
+    if (unsupported.length > 0) {
+      return {
+        ok: false,
+        reason: `"state.${key}" uses ${unsupported.join(", ")}, which is not expanded; only $(pwd) and $(pwd -P) are`,
+      };
+    }
+    template[key] = value;
+  }
+  if (!Object.values(template).some((value) => value.includes("${command}"))) {
+    return {
+      ok: false,
+      reason: 'no "state" value contains ${command}, so the command itself would never reach the model',
+    };
+  }
+  return { ok: true, template };
+}
+
+/**
+ * Expand a template for one request.
+ *
+ * `command` is substituted from the call, not from the environment: the model must
+ * always see the command that is actually about to run.
+ */
+export function renderState(
+  template: StateTemplate,
+  command: string,
+  cwd: string,
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  const rendered: Record<string, string> = {};
+  for (const [key, value] of Object.entries(template)) {
+    // `${command}` is substituted before any environment lookup, and the lookup
+    // can never override it: the model must review the command that will run, so
+    // an environment variable that happens to be called `command` is irrelevant.
+    const substituted = value.replaceAll("${command}", command);
+    rendered[key] = expandVariables(substituted, {
+      env: Object.fromEntries(Object.entries(env).filter(([name]) => name !== "command")),
+      cwd,
+    });
+  }
+  return rendered;
 }
 
 function expandCategories(
@@ -325,6 +443,9 @@ function expandCategories(
 }
 
 /** Render a policy as the JSON written to disk. */
-export function serializePolicy(categories: readonly Category[]): string {
-  return `${JSON.stringify({ categories }, null, 2)}\n`;
+export function serializePolicy(
+  categories: readonly Category[],
+  state: StateTemplate = DEFAULT_STATE,
+): string {
+  return `${JSON.stringify({ state, categories }, null, 2)}\n`;
 }

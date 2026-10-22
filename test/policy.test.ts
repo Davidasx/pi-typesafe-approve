@@ -5,6 +5,7 @@ import { tmpdir } from "node:os";
 import { join } from "node:path";
 import {
   BUILT_IN_CATEGORIES,
+  DEFAULT_STATE,
   POLICY_FILE_NAME,
   ROUTINE_CATEGORY,
   loadPolicy,
@@ -157,6 +158,59 @@ test("examples are optional and non-strings are dropped", () => {
   if (result.ok) {
     assert.deepEqual(result.categories[0]?.examples, ["keep", "also keep"]);
     assert.equal(result.categories[1]?.examples, undefined);
+  }
+});
+
+test("the default file carries the state template", () => {
+  const ctx = context();
+  const loaded = loadPolicy(ctx);
+  const written = JSON.parse(readFileSync(loaded.path, "utf8")) as { state?: Record<string, string> };
+  assert.deepEqual(written.state, DEFAULT_STATE);
+  assert.deepEqual(loaded.state, DEFAULT_STATE);
+});
+
+test("a custom state template is kept and a missing one falls back", () => {
+  const ctx = context();
+  mkdirSync(ctx.configDir, { recursive: true });
+  writeFileSync(
+    policyPath(ctx),
+    JSON.stringify({
+      state: { command: "${command}", cwd: "$(pwd -P)", scratch: "${PI_TMPDIR}" },
+      categories: [{ id: "routine_work", polarity: "positive", what: "x" }],
+    }),
+  );
+  const loaded = loadPolicy(ctx);
+  assert.deepEqual(loaded.state, { command: "${command}", cwd: "$(pwd -P)", scratch: "${PI_TMPDIR}" });
+
+  writeFileSync(policyPath(ctx), JSON.stringify({ categories: [{ id: "routine_work", polarity: "positive", what: "x" }] }));
+  assert.deepEqual(loadPolicy(ctx).state, DEFAULT_STATE);
+});
+
+test("a state template that could never send the command is rejected", () => {
+  const result = parsePolicy(JSON.stringify({
+    state: { context: "reviewing" },
+    categories: [{ id: "routine_work", polarity: "positive", what: "x" }],
+  }));
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.reason, /never reach the model/);
+});
+
+test("a state template with an unsupported command is rejected, naming it", () => {
+  const result = parsePolicy(JSON.stringify({
+    state: { command: "${command}", now: "$(date)" },
+    categories: [{ id: "routine_work", polarity: "positive", what: "x" }],
+  }));
+  assert.equal(result.ok, false);
+  if (!result.ok) assert.match(result.reason, /\$\(date\)/);
+});
+
+test("a non-string or empty state value is rejected", () => {
+  for (const state of [{ command: 1 }, {}, { command: "${command}", x: null }]) {
+    const result = parsePolicy(JSON.stringify({
+      state,
+      categories: [{ id: "routine_work", polarity: "positive", what: "x" }],
+    }));
+    assert.equal(result.ok, false, JSON.stringify(state));
   }
 });
 

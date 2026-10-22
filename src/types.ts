@@ -112,6 +112,16 @@ export interface Category {
 }
 
 /**
+ * A `state` template, as stored in `policy.json`.
+ *
+ * Values are strings that carry `${NAME}` and `$(pwd -P)` references, expanded
+ * per request. `command` and `cwd` are not referenced like that: the gate fills
+ * those two from the call itself, so a template cannot accidentally review a
+ * different command from the one that will run.
+ */
+export type StateTemplate = Record<string, string>;
+
+/**
  * The review policy: the categories the model chooses between.
  *
  * A flat list rather than nested rules, because the model gets to pick exactly
@@ -120,6 +130,8 @@ export interface Category {
  */
 export interface Policy {
   categories: Category[];
+  /** The `state` sent with every request. Defaults to the command and its directory. */
+  state?: StateTemplate;
 }
 
 /** Fill in a polarity that was left out, treating it as a violation. */
@@ -137,12 +149,22 @@ export interface DecisionSignals {
    * command does one of the things the policy says must be stopped.
    */
   violationMass?: number;
-  /** The category with the highest probability, for diagnosis. */
+  /** The category with the highest probability overall, for diagnosis. */
   label?: string;
   /** True when that label is a positive (allowed) category. */
   labelIsPositive?: boolean;
   /** Probability of the chosen category. */
   labelConfidence?: number;
+  /**
+   * The non-positive category with the highest probability, and its probability.
+   *
+   * This is the useful one when a command is stopped: the overall label can be a
+   * positive category while 0.45 of the mass is spread across violations, and
+   * telling a human "most likely routine_work" explains nothing about why the
+   * command was stopped.
+   */
+  worstCategory?: string;
+  worstProbability?: number;
 }
 
 export interface Decision {

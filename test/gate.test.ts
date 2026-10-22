@@ -60,6 +60,7 @@ function harness(options: HarnessOptions = {}) {
       return config;
     },
     getPolicy: () => POLICY,
+    env: () => ({}),
     getCwd: () => "/work",
     isConfigured: (_config) => options.configured ?? true,
     ask: async (request, _signal, _config) => {

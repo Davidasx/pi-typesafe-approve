@@ -215,6 +215,50 @@ and optional `examples`:
 and in every example — which is how a category names your real home directory
 without hard-coding it.
 
+#### The state the model sees
+
+`state` is what the request carries about the command. The default is three
+fields and no more:
+
+```json
+"state": {
+  "context": "One shell command that an AI coding agent wants to run ...",
+  "command": "${command}",
+  "working_directory": "$(pwd -P)"
+}
+```
+
+Add whatever else the model needs to read your categories correctly. On a machine
+where scratch files have a designated home, naming it turns "put scratch files in
+the scratch directory" from prose into a fact:
+
+```json
+"state": {
+  "context": "...",
+  "command": "${command}",
+  "working_directory": "$(pwd -P)",
+  "scratch_directory": "${PI_TMPDIR}",
+  "home": "${HOME}"
+}
+```
+
+Values are flat strings. Three substitutions happen, and nothing else:
+
+| Written | Becomes |
+|---|---|
+| `${NAME}` | the environment variable `NAME`, if set and non-empty |
+| `${command}` | the command being judged, always, whatever the environment says |
+| `$(pwd)` / `$(pwd -P)` | the session's working directory |
+
+`$(…)` with any other command is **not** executed and is rejected at load with
+the fragment named. Handing config text to a shell would make editing
+`policy.json` equivalent to running code, and expansion also runs on paths that
+only display it. `pwd` is answered from `process.cwd()`, which is already the
+physical path `pwd -P` would print, so the common case works without a shell.
+
+A template with no `${command}` anywhere is rejected: the command would never
+reach the model, and the extension would be judging nothing.
+
 #### Why polarities, and not exceptions in prose
 
 A rule and its exception in the same sentence do not work. "Absolute paths need
@@ -234,11 +278,11 @@ its own**. That is the lever that works.
 
 #### The built-in categories
 
-Eight stop categories — unrecoverable destruction, secret exposure, weakened
+Nine stop categories — unrecoverable destruction, secret exposure, weakened
 security, code fetched from elsewhere and run, privilege escalation, service
-disruption, writes outside the allowed paths, misplaced scratch files — and three
-allowed ones: `permission_tightened`, `scoped_process_control`, and
-`routine_work`, which is the catch-all for ordinary development.
+disruption, writes outside the allowed paths, scripted in-place file edits, and
+misplaced scratch files — and three allowed ones: `permission_tightened`,
+`scoped_process_control`, and `routine_work`, the catch-all for ordinary work.
 
 Nothing in the built-ins mandates a working style beyond the paths rule, which
 names `${HOME}/.pi` and `${HOME}/.agents` explicitly. There is no rule about
@@ -440,7 +484,7 @@ cost stays near zero on the commands you run most.
 ## Tests
 
 ```bash
-npm test          # 108 tests: unit + an end-to-end test against a local stub
+npm test          # 115 tests: unit + an end-to-end test against a local stub
 npm run typecheck
 npm run check     # both
 ```

@@ -187,9 +187,9 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
       const client = getClient(config);
       const started = Date.now();
       const loaded = readPolicy();
-      const policy = { categories: loaded.categories };
+      const policy = { categories: loaded.categories, state: loaded.state };
       const response = await client.ask({
-        state: buildState("ls -la", sessionCwd),
+        state: buildState("ls -la", sessionCwd, loaded.state, process.env),
         questions: buildQuestions(policy),
       });
       return `pi-typesafe-approve: ${response.model ?? config.model} answered OK in ${Date.now() - started} ms (${summarizeUsage(response.usage)}).`;
@@ -200,7 +200,11 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
 
   const gate = createGate({
     getConfig,
-    getPolicy: () => ({ categories: readPolicy().categories }),
+    getPolicy: () => {
+      const current = readPolicy();
+      return { categories: current.categories, state: current.state };
+    },
+    env: () => process.env,
     getCwd: () => sessionCwd,
     isConfigured,
     ask: (request, signal, config) => getClient(config).ask(request, signal ? { signal } : {}),
@@ -348,9 +352,10 @@ async function runManualTest(
     return;
   }
   try {
-    const policy = { categories: deps.policy().categories };
+    const loaded = deps.policy();
+    const policy = { categories: loaded.categories, state: loaded.state };
     const response = await deps.getClient(config).ask({
-      state: buildState(command, deps.cwd()),
+      state: buildState(command, deps.cwd(), loaded.state, process.env),
       questions: buildQuestions(policy),
     });
     const decision = decide(response, config, negativeSet(policy));

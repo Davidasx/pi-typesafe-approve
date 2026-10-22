@@ -34,29 +34,31 @@ import type {
   DecisionSignals,
   JevQuestion,
   Policy,
+  StateTemplate,
   StructuredValue,
   SystemOneResponse,
 } from "./types.ts";
 import { polarityOf } from "./types.ts";
+import { renderState } from "./policy.ts";
 
 export const OUTCOME_QUESTION = "outcome";
 
-/** The one line of context this extension adds to the command and directory. */
-export const REVIEW_CONTEXT =
-  "One shell command that an AI coding agent wants to run on the user's own machine is being reviewed before it runs. Decide what it would do.";
-
 /**
- * The `state` sent with every request.
+ * The `state` for one request, from the policy's own template.
  *
- * Deliberately three fields: what is being judged, where, and the one sentence of
- * context needed to read the categories in the right frame.
+ * The default template carries the command and its directory; a policy may add
+ * the scratch directory or anything else the user knows about their machine. Two
+ * values are always substituted from the call rather than from the environment —
+ * the command being judged and the working directory — so what the model reviews
+ * is what will run, even if the template also mentions them.
  */
-export function buildState(command: string, cwd: string): StructuredValue {
-  return {
-    context: REVIEW_CONTEXT,
-    command,
-    working_directory: cwd,
-  };
+export function buildState(
+  command: string,
+  cwd: string,
+  template: StateTemplate,
+  env: Readonly<Record<string, string | undefined>>,
+): Record<string, string> {
+  return renderState(template, command, cwd, env);
 }
 
 /** Ids of the categories that count toward the violation total. */
@@ -122,17 +124,35 @@ export function decide(
   }
 
   const label = answer.choice;
+
+  // The single most likely violation, which is what explains a stop when the
+  // overall most likely category happens to be an allowed one.
+  let worstCategory: string | undefined;
+  let worstProbability: number | undefined;
+  for (const [id, probability] of Object.entries(categories)) {
+    if (!negative.has(id)) continue;
+    if (worstProbability === undefined || probability > worstProbability) {
+      worstCategory = id;
+      worstProbability = probability;
+    }
+  }
+
   const signals: DecisionSignals = {
     violationMass,
     label,
     labelIsPositive: !negative.has(label),
     labelConfidence: answer.confidence,
+    ...(worstCategory ? { worstCategory } : {}),
+    ...(worstProbability !== undefined ? { worstProbability } : {}),
   };
 
   const threshold = config.thresholds.violation;
   const reasons =
     violationMass >= threshold
-      ? [`violation probability ${format(violationMass)} >= ${threshold} (most likely: ${label})`]
+      ? [
+          `violation probability ${format(violationMass)} >= ${threshold}` +
+            (worstCategory ? ` (most likely violation: ${worstCategory} at ${format(worstProbability ?? 0)})` : ""),
+        ]
       : [];
 
   const decision: Decision = {
@@ -161,7 +181,20 @@ export function summarize(command: string, decision: Decision): string {
   if (signals.violationMass !== undefined) {
     parts.push(`violation=${format(signals.violationMass)}`);
   }
-  if (signals.label) {
+  // When a violation outranks everything else, naming the top category is enough;
+  // when a positive category wins the argmax but violations still cross the
+  // threshold, the violation is the only thing worth printing.
+  const hasViolation = (signals.worstProbability ?? 0) > 0;
+  if (
+    hasViolation &&
+    signals.worstCategory !== undefined &&
+    (signals.labelIsPositive || signals.label !== signals.worstCategory)
+  ) {
+    parts.push(
+      `most likely violation ${signals.worstCategory}(${format(signals.worstProbability ?? 0)})` +
+        (signals.label ? `, top category ${signals.label}` : ""),
+    );
+  } else if (signals.label) {
     const confidence = signals.labelConfidence !== undefined ? `(${format(signals.labelConfidence)})` : "";
     parts.push(
       `most likely ${signals.label}${confidence}${signals.labelIsPositive ? "" : " [stop]"}`,

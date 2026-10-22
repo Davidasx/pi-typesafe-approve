@@ -253,6 +253,10 @@ export function createApproveMenu(
           title: "Categories sent to the model",
           lines: [`${policy.categories.length} categories · ${policy.path}`],
           content,
+          // Without "adaptive" the kit caps the viewport at a fixed 14 rows, so on
+          // a short terminal the text runs past the bottom of the screen instead
+          // of scrolling. Adaptive sizes the viewport to the terminal and scrolls.
+          viewportSize: "adaptive",
           confirm: { id: "done", label: "Back", action: "policy-back" },
         };
       },

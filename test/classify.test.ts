@@ -3,7 +3,6 @@ import assert from "node:assert/strict";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import {
   OUTCOME_QUESTION,
-  REVIEW_CONTEXT,
   blockedReason,
   buildQuestions,
   buildState,
@@ -13,7 +12,7 @@ import {
   signalsOf,
   summarize,
 } from "../src/classify.ts";
-import { BUILT_IN_CATEGORIES } from "../src/policy.ts";
+import { BUILT_IN_CATEGORIES, DEFAULT_STATE } from "../src/policy.ts";
 import type { Category, Policy, SystemOneResponse } from "../src/types.ts";
 
 const policy: Policy = { categories: [...BUILT_IN_CATEGORIES] };
@@ -71,12 +70,37 @@ test("each option carries its description, and examples when it has any", () => 
   assert.equal(single.only_text, "just text");
 });
 
-test("the state is only the command, the directory, and one line of context", () => {
-  assert.deepEqual(buildState("ls -la", "/work"), {
-    context: REVIEW_CONTEXT,
+test("the built-in state is the command, the directory, and one line of context", () => {
+  assert.deepEqual(buildState("ls -la", "/work", DEFAULT_STATE, {}), {
+    context: DEFAULT_STATE.context,
     command: "ls -la",
     working_directory: "/work",
   });
+});
+
+test("a custom state template adds fields and expands references", () => {
+  const state = buildState(
+    "ls -la",
+    "/work",
+    {
+      context: "reviewing",
+      command: "${command}",
+      cwd: "$(pwd -P)",
+      scratch: "${PI_TMPDIR}",
+    },
+    { PI_TMPDIR: "/scratch" },
+  );
+  assert.deepEqual(state, {
+    context: "reviewing",
+    command: "ls -la",
+    cwd: "/work",
+    scratch: "/scratch",
+  });
+});
+
+test("${command} is always the command being judged, not an environment value", () => {
+  const state = buildState("rm -rf x", "/work", { command: "${command}" }, { command: "evil" });
+  assert.equal(state.command, "rm -rf x");
 });
 
 test("the built-in policy has both polarities, and a routine catch-all", () => {
@@ -186,6 +210,42 @@ test("summaries name the mass and the most likely category", () => {
 
   const allowed = decide(answer("routine_work"), config, negative);
   assert.match(summarize("ls", allowed), /most likely routine_work\(1\.00\) — ls$/);
+});
+
+test("a stop names the most likely violation, not the overall argmax", () => {
+  // The case that motivated this: 0.45 of violation mass spread out, with a
+  // positive category winning the argmax. "most likely routine_work" explains
+  // nothing to the person being asked to approve.
+  const decision = decide(
+    answer("routine_work", {
+      routine_work: 0.51,
+      write_outside_allowed: 0.3,
+      secret_exposure: 0.15,
+      irreversible_destruction: 0,
+    }),
+    config,
+    negative,
+  );
+  assert.equal(decision.verdict, "escalate");
+  assert.equal(decision.signals.worstCategory, "write_outside_allowed");
+  assert.equal(decision.signals.worstProbability?.toFixed(2), "0.30");
+  assert.match(decision.reasons[0] ?? "", /most likely violation: write_outside_allowed at 0\.30/);
+
+  const line = summarize("hostile", decision);
+  assert.match(line, /most likely violation write_outside_allowed\(0\.30\)/);
+  assert.match(line, /top category routine_work/);
+});
+
+test("an allowed command does not claim a violation at zero probability", () => {
+  const decision = decide(answer("routine_work"), config, negative);
+  assert.equal(decision.signals.worstProbability, 0);
+  assert.match(summarize("ls", decision), /most likely routine_work/);
+  assert.doesNotMatch(summarize("ls", decision), /most likely violation/);
+});
+
+test("a clear violation still reads as the plain argmax", () => {
+  const decision = decide(answer("secret_exposure"), config, negative);
+  assert.match(summarize("cat key", decision), /most likely secret_exposure\(1\.00\) \[stop\]/);
 });
 
 test("the blocked reason carries the evidence and the command", () => {

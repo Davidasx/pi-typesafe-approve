@@ -55,6 +55,7 @@ import {
   signalsOf,
 } from "./classify.ts";
 import type { DecisionLogRecord, DecisionLogger } from "./log.ts";
+import { DEFAULT_STATE } from "./policy.ts";
 import { SystemOneError } from "./systemone.ts";
 import type {
   ApproveConfig,
@@ -89,8 +90,10 @@ export interface GateUi {
 
 export interface GateDeps {
   getConfig(): ApproveConfig;
-  /** The categories the model chooses between. */
+  /** The categories the model chooses between, and the state template. */
   getPolicy(): Policy;
+  /** Environment, for expanding the state template. */
+  env(): Readonly<Record<string, string | undefined>>;
   getCwd(): string;
   /**
    * Whether this configuration is usable. Takes the config rather than fetching
@@ -173,7 +176,7 @@ export function createGate(deps: GateDeps) {
       });
     };
     const policy = deps.getPolicy();
-    const state = buildState(command, cwd);
+    const state = buildState(command, cwd, policy.state ?? DEFAULT_STATE, deps.env());
     const questions = buildQuestions(policy);
     const cacheKey = hashRequest(config, state, policy);
     const cached = cacheGet(cacheKey);

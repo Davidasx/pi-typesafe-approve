@@ -6,7 +6,7 @@
 import { test } from "node:test";
 import assert from "node:assert/strict";
 import { DEFAULT_CONFIG } from "../src/config.ts";
-import { BUILT_IN_CATEGORIES } from "../src/policy.ts";
+import { BUILT_IN_CATEGORIES, DEFAULT_STATE } from "../src/policy.ts";
 import {
   createApproveMenu,
   describeKey,
@@ -26,6 +26,7 @@ function state(overrides: Partial<ApproveConfig> = {}): ApproveMenuState {
     config: { ...DEFAULT_CONFIG, ...overrides },
     policy: {
       categories: [...BUILT_IN_CATEGORIES],
+      state: DEFAULT_STATE,
       path: "/agent/extensions/pi-typesafe-approve/policy.json",
       created: false,
       fallback: false,

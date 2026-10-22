@@ -1,42 +1,51 @@
 /**
- * `${NAME}` expansion for the policy file.
+ * Expansion for text in the policy file.
  *
- * Exactly one rule:
+ * Three forms, and nothing else:
  *
- * - `${NAME}`, where `NAME` is `[A-Za-z_][A-Za-z0-9_]*`, is replaced by the
- *   environment variable of that name, if it is set and non-empty;
- * - **every other `$` is a literal `$`.**
+ * | Written | Meaning |
+ * |---|---|
+ * | `${NAME}` | the environment variable `NAME`, if set and non-empty |
+ * | `$(pwd)` / `$(pwd -P)` | the session's working directory |
+ * | every other `$` | a literal `$` |
  *
- * Requiring the braces buys two things. A bare `$` in ordinary prose stays
- * literal, so no escape syntax is needed at all — `$$`, `$5`, and `$HOME` all
- * mean exactly what they look like. And there is no ambiguity about where a name
- * ends, which the bare form has to guess at.
+ * ## Why `pwd` is a special case and not a shell
  *
- * Case carries no meaning: `${HOME}` and `${home}` both name environment
- * variables. There is deliberately **no** built-in set of dynamic values such as
- * `${cwd}`. Facts like the working directory are structured fields on the
- * request `state` (`{context, command, working_directory}`), so the model
- * receives them exactly; repeating them inside the prose would be duplicate
- * information and a second thing for this extension to maintain. The environment
- * is the one expansion that earns its place, because it is already how a machine
- * names things a policy might want to mention — `$HOME`, `$PI_TMPDIR`, and
- * whatever else the user exports.
+ * `$(pwd -P)` cannot be handed to a real shell. This text is file content that
+ * the extension creates itself on first run, expansion runs on paths that only
+ * *display* it (logging, the settings screen, reporting unresolved references),
+ * and "reading a config file runs code" is not a property to introduce into a
+ * security check. So `pwd` is recognised as one of two exact strings and answered
+ * with a value the process already holds: `process.cwd()` is the physical path,
+ * which is what `pwd -P` returns. Nothing is executed, no other command name is
+ * recognised, and `$(…)` with anything else is left as written.
  *
- * Also deliberately not supported: `$(command)` or backticks. Running a shell
- * command read out of a config file would make editing it code execution.
+ * Requiring the braces on `${NAME}` means no escape syntax is needed at all:
+ * `$$`, `$5`, and `$HOME` all mean exactly what they look like, and there is no
+ * ambiguity about where a name ends.
  *
- * An unresolvable `${NAME}` is left exactly as written, so a typo stays visible
- * in the text instead of silently collapsing to nothing. Callers can report the
- * leftovers with {@link findReferences} and {@link findUnresolved}.
+ * Case carries no meaning for `${NAME}`: `${HOME}` and `${home}` both name
+ * environment variables.
+ *
+ * An unresolvable reference is left exactly as written, so a typo stays visible
+ * in the output instead of silently collapsing to nothing. Callers can report the
+ * leftovers with {@link findReferences}, {@link findUnresolved} and
+ * {@link findUnsupported}.
  */
 
 export interface ExpandOptions {
   env?: Readonly<Record<string, string | undefined>>;
+  /** The working directory `$(pwd)` resolves to. */
+  cwd?: string;
 }
 
 const REFERENCE = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/gu;
 /** A bare `$word` that the user may have expected to expand. */
 const BARE_REFERENCE = /\$([A-Za-z_][A-Za-z0-9_]*)/gu;
+/** Exactly the two command forms that are answered from local state. */
+const PWD = /\$\(\s*pwd(?:\s+-P)?\s*\)/gu;
+/** Any `$(…)` at all, so the ones that are not `pwd` can be reported. */
+const COMMAND = /\$\([^)]*\)/gu;
 
 /** Every `${NAME}` in a text, in order and including duplicates. */
 export function findReferences(text: string): string[] {
@@ -59,7 +68,7 @@ export function findUnresolved(
  * Bare `$word` occurrences, which this syntax does not expand.
  *
  * Used only to warn: a user who wrote `$HOME` out of habit gets told to write
- * `${HOME}`, instead of silently getting a literal `$HOME` in the policy.
+ * `${HOME}`, instead of silently getting a literal `$HOME`.
  */
 export function findBareReferences(text: string): string[] {
   // `${FOO}` cannot match: the `$` there is followed by `{`, not a letter.
@@ -70,12 +79,28 @@ export function findBareReferences(text: string): string[] {
   return [...new Set(found)];
 }
 
+/**
+ * `$(…)` fragments that are not the one supported command.
+ *
+ * Returned so a policy that reaches for `$(date)` or `$(git rev-parse HEAD)` is
+ * told that nothing was substituted, rather than silently carrying the literal
+ * text into a prompt.
+ */
+export function findUnsupported(text: string): string[] {
+  const supported = new Set([...text.matchAll(PWD)].map((match) => match[0]));
+  return [...new Set([...text.matchAll(COMMAND)].map((match) => match[0]))].filter(
+    (fragment) => !supported.has(fragment),
+  );
+}
+
 export function expandVariables(
   text: string,
   options: ExpandOptions = {},
 ): string {
   const env = options.env ?? {};
-  return text.replace(REFERENCE, (original, name: string) => {
+  const withPwd =
+    options.cwd === undefined ? text : text.replace(PWD, () => options.cwd as string);
+  return withPwd.replace(REFERENCE, (original, name: string) => {
     const value = env[name];
     return value === undefined || value === "" ? original : value;
   });
