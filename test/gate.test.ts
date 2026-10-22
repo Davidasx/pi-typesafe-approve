@@ -46,8 +46,9 @@ function harness(options: HarnessOptions = {}) {
 
   const ui: GateUi = {
     hasUI: options.hasUI ?? true,
-    confirm: async (_title, message) => {
-      prompts.push(message);
+    confirm: async (title, message) => {
+      // Record both: the verdict lives in the title, and the message is the body.
+      prompts.push(`${title}\n${message}`);
       return options.confirm ?? false;
     },
     notify: (message) => notes.push(message),
@@ -113,6 +114,13 @@ test("an escalated command blocks when the user declines", async () => {
   const result = await h.gate(bash("rm -rf /"), h.ui);
   assert.equal(result?.block, true);
   assert.match(result?.reason ?? "", /user declined|risk check/i);
+  // No transcript note: Pi has already rendered the bash call in the chat before
+  // `tool_call` fires, so repeating the command here would only say it twice.
+  assert.equal(h.notes.length, 0, "the command is already on screen; do not echo it");
+  // The dialog still carries the verdict, which is what the user cannot read off
+  // the command itself.
+  assert.equal(h.prompts.length, 1, "exactly one prompt");
+  assert.match(h.prompts[0] ?? "", /irreversible_destruction \d+%/, "the verdict is in the dialog");
 });
 
 test("an escalated command runs when the user approves", async () => {

@@ -267,11 +267,15 @@ export function createGate(deps: GateDeps) {
     }
 
     if (action === "prompt") {
-      // The confirmation dialog is a `Text` component: it wraps but cannot scroll,
-      // and a long command runs off the bottom of a short terminal. So the dialog
-      // carries only the verdict, and the command goes to the transcript first,
-      // where it can be scrolled, searched, and still be there afterwards.
-      ui.notify(`pi-typesafe-approve · ${verdictLine(decision)}\n${command}`, "warning");
+      // The command is already on screen: Pi renders a bash call into the chat as
+      // the assistant streams its arguments, and `tool_call` fires only afterwards,
+      // on the way to execution. Echoing it here therefore says nothing the user
+      // cannot see a few lines up, and repeating a long command in a warning pushes
+      // the dialog's actual question off a short terminal.
+      //
+      // The dialog is a `Text` component that wraps but cannot scroll, so it carries
+      // the verdict and nothing else. The verdict is the one thing the user cannot
+      // read off the command themselves, which is why it is the part that stays.
       const approved = await ui.confirm(`Run this command?\n${verdictLine(decision)}`, "");
       log(decision, approved ? "allow" : "block", extra);
       return approved
