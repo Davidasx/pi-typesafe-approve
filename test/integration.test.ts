@@ -154,7 +154,12 @@ test("the extension gates a real Bash tool call through a real HTTP endpoint", a
   );
   assert.equal(dangerous?.block, true);
   assert.match(dangerous?.reason ?? "", /blocked this command/);
-  assert.match(dangerous?.reason ?? "", /irreversible_destruction \d+% ≥ 30% · stop/);
+  // Either shape is legitimate for a real answer: one dominant violation is named
+  // with its own figure, several sharing the mass are quoted as a sum.
+  assert.match(
+    dangerous?.reason ?? "",
+    /(irreversible_destruction \d+%|(\d+%) of violation mass) ≥ 30%( \([^)]*\))? · stop/,
+  );
 
   // Non-bash tools are never sent to the model.
   const beforeCount = stub.captured.length;

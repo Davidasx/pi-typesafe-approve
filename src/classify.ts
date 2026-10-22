@@ -201,13 +201,26 @@ export function verdictLine(decision: Decision): string {
   if (decision.verdict === "allow") {
     return `allow · ${signals.label ?? "no category"} ${percent(signals.labelConfidence ?? 0)}`;
   }
+  // What crossed the limit is the sum of the violation probabilities, not the
+  // single largest one. Printing the largest next to "≥ limit" states a false
+  // inequality whenever several categories share the mass: 20% + 15% clears a 30%
+  // limit, and "20% ≥ 30%" contradicts the very decision being explained.
   const category = signals.worstCategory ?? signals.label ?? "unknown";
-  const probability = signals.worstProbability ?? signals.violationMass ?? 0;
+  const worst = signals.worstProbability ?? 0;
+  const mass = signals.violationMass ?? 0;
+  const limit = percent(limitOf(decision));
   const detail =
     signals.labelIsPositive && signals.label
       ? `, ${signals.label} also plausible`
       : "";
-  return `${category} ${percent(probability)} ≥ ${percent(limitOf(decision))}${detail} · stop`;
+  // One violation dominant: name it with its own number, which equals the mass.
+  // Mass spread over several: the sum is the honest figure, and the worst category
+  // is named without claiming its own probability reached the limit.
+  const amount =
+    Math.abs(mass - worst) < 0.005
+      ? `${category} ${percent(worst)} ≥ ${limit}`
+      : `${percent(mass)} of violation mass ≥ ${limit} (${category} the largest at ${percent(worst)})`;
+  return `${amount}${detail} · stop`;
 }
 
 /** The `violation=… most likely …` portion, without the command. */

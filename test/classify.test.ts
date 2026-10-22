@@ -238,7 +238,10 @@ test("a stop names the most likely violation, not the overall argmax", () => {
   assert.match(decision.reasons[0] ?? "", /^48% of violation mass, limit 30%$/);
 
   const line = summarize("hostile", decision);
-  assert.match(line, /^write_outside_allowed 30% ≥ 30%/);
+  // 48% of mass cleared a 30% limit while the largest single category was 30%, so
+  // the line has to quote the sum: printing "30% ≥ 30%" would be a true inequality
+  // by luck, and "20% ≥ 30%" in the general case is a false one.
+  assert.match(line, /^48% of violation mass ≥ 30% \(write_outside_allowed the largest at 30%\)/);
   assert.match(line, /routine_work also plausible/);
   assert.match(line, /· stop — hostile$/);
 });
