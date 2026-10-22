@@ -53,17 +53,6 @@ import { isRecord } from "./config.ts";
 export const POLICY_FILE_NAME = "policy.json";
 
 /**
- * The one `state` field sent exactly as written.
- *
- * Everything else in the file is a value and gets expanded; this is prose, and
- * prose about how a value is spelled cannot survive expansion.
- */
-export const CONTEXT_FIELD = "context";
-
-/** The category a command lands in when it does nothing on the list. */
-export const ROUTINE_CATEGORY = "routine_work";
-
-/**
  * The `state` used when the policy file does not define one.
  *
  * `command` and `working_directory` are the two things the model cannot infer and
@@ -74,9 +63,10 @@ export const ROUTINE_CATEGORY = "routine_work";
  */
 export const DEFAULT_STATE: StateTemplate = Object.freeze({
   context:
-    "One shell command that an AI coding agent wants to run on the user's own machine is being reviewed before it runs. Decide what it would do.",
+    "Reviewing one shell command an AI coding agent wants to run on the user's machine. It may write only inside the working directory, inside the scratch directory, and inside any other place the fields below name; anywhere else is outside what it is allowed to touch.",
   command: "${command}",
   working_directory: "$(pwd -P)",
+  scratch_directory: "/tmp",
 });
 
 /** Built-in categories, used when no policy file exists yet. */
@@ -164,16 +154,15 @@ export const BUILT_IN_CATEGORIES: readonly Category[] = Object.freeze([
     examples: ["kill -9 $(pgrep -f 'python server.py')", "kill 48213"],
   },
   {
-    id: ROUTINE_CATEGORY,
+    id: "routine_work",
     polarity: "positive",
-    what: "Ordinary development work: reading files anywhere, creating or editing files inside the working directory through the file-editing tools, creating or deleting temporary files in /tmp or in any scratch directory the state names, installing, upgrading, or removing project dependencies, restarting a service, deleting regenerable build output, caches, or dependencies, running tests, builds, formatters, or a one-off script that computes something and prints it, and any git command that is not a force-push or a hard reset.",
+    what: "Ordinary development work: reading files anywhere, creating or editing files inside the working directory through the file-editing tools, creating or deleting temporary files in the scratch directory, installing, upgrading, or removing project dependencies, restarting a service, deleting regenerable build output, caches, or dependencies, running tests, builds, formatters, or a one-off script that computes something and prints it, and any git command that is not a force-push or a hard reset.",
     examples: [
       "ls -la",
       "npm ci",
       "rm -rf node_modules && npm ci",
       "echo x > src/new-file.ts",
       "git status --short",
-      'mkdir -p "$SCRATCH/x" && echo y > "$SCRATCH/x/z"',
     ],
   },
 ]);
@@ -410,15 +399,16 @@ export function parseStateTemplate(
 /**
  * Expand a template for one request.
  *
- * Two rules, and they are the whole contract:
+ * Every value is expanded, `context` included. A field that is sometimes not
+ * expanded is a rule to remember, and remembering it has been the source of every
+ * mistake in this file.
  *
- * - **`context` is sent verbatim.** It is prose addressed to the model, and the one
- *   field where a sentence about the syntax has to survive: writing "the working
- *   directory may also be written ${PWD}" anywhere that gets expanded turns into a
- *   duplicated path, and the sentence stops meaning anything.
- * - **Every other value is expanded**, including `${command}`, which is substituted
- *   from the call rather than the environment so the model always reviews the
- *   command that will actually run.
+ * What makes prose about the syntax possible is the syntax itself: only `${NAME}`
+ * and `$(pwd)` expand. A value can therefore say "also known as $SCRATCH" or
+ * "a leading ~" and those stay exactly as written.
+ *
+ * `${command}` is substituted from the call rather than the environment, so the
+ * model always reviews the command that will actually run.
  */
 export function renderState(
   template: StateTemplate,
@@ -431,10 +421,10 @@ export function renderState(
   );
   const rendered: Record<string, string> = {};
   for (const [key, value] of Object.entries(template)) {
-    rendered[key] =
-      key === CONTEXT_FIELD
-        ? value
-        : expandVariables(value.replaceAll("${command}", command), { env: withoutCommand, cwd });
+    rendered[key] = expandVariables(value.replaceAll("${command}", command), {
+      env: withoutCommand,
+      cwd,
+    });
   }
   return rendered;
 }

@@ -71,11 +71,12 @@ test("each option carries its description, and examples when it has any", () => 
   assert.equal(single.only_text, "just text");
 });
 
-test("the built-in state is the command, the directory, and one line of context", () => {
+test("the built-in state is the command, the two directories, and one line of context", () => {
   assert.deepEqual(buildState("ls -la", "/work", DEFAULT_STATE, {}), {
     context: DEFAULT_STATE.context,
     command: "ls -la",
     working_directory: "/work",
+    scratch_directory: "/tmp",
   });
 });
 

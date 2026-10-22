@@ -8,7 +8,6 @@ import {
   DEFAULT_STATE,
   renderState,
   POLICY_FILE_NAME,
-  ROUTINE_CATEGORY,
   loadPolicy,
   parsePolicy,
   policyPath,
@@ -112,7 +111,7 @@ test("a category without a polarity counts as a violation", () => {
   // Fail-safe: forgetting the field must never weaken the check.
   const result = parse([
     { id: "forgot_polarity", what: "a thing" },
-    { id: ROUTINE_CATEGORY, polarity: "positive", what: "fine" },
+    { id: "routine_work", polarity: "positive", what: "fine" },
   ]);
   assert.equal(result.ok, true);
   if (result.ok) assert.equal(result.categories[0]?.polarity, "negative");
@@ -170,13 +169,11 @@ test("the default file carries the state template", () => {
   assert.deepEqual(loaded.state, DEFAULT_STATE);
 });
 
-test("context is sent verbatim while every other value is expanded", () => {
-  // Prose about the syntax has to survive: expanding it would turn a sentence that
-  // names two spellings into the same path twice.
+test("every state value expands, context included", () => {
   const ctx = context({ HOME: "/home/u", SCRATCH: "/s" });
   const rendered = renderState(
     {
-      context: "writes inside $(pwd -P), which a command may also spell ${PWD}",
+      context: "the agent may write inside ${SCRATCH}",
       command: "${command}",
       cwd: "$(pwd -P)",
       scratch: "${SCRATCH}",
@@ -185,10 +182,28 @@ test("context is sent verbatim while every other value is expanded", () => {
     "/home/u/proj",
     ctx.env,
   );
-  assert.equal(rendered.context, "writes inside $(pwd -P), which a command may also spell ${PWD}");
+  assert.equal(rendered.context, "the agent may write inside /s");
   assert.equal(rendered.command, "ls");
   assert.equal(rendered.cwd, "/home/u/proj");
   assert.equal(rendered.scratch, "/s");
+});
+
+test("the bare form stays literal, which is what prose about a syntax uses", () => {
+  // The escape for writing about the syntax is the syntax: only ${NAME} expands,
+  // so "$SCRATCH" is text.
+  const ctx = context({ SCRATCH: "/s" });
+  const rendered = renderState(
+    {
+      context: "also known as $SCRATCH, and ~ is the home directory",
+      scratch: "${SCRATCH} — also known as $SCRATCH",
+      command: "${command}",
+    },
+    "ls",
+    "/w",
+    ctx.env,
+  );
+  assert.equal(rendered.context, "also known as $SCRATCH, and ~ is the home directory");
+  assert.equal(rendered.scratch, "/s — also known as $SCRATCH");
 });
 
 test("a custom state template is kept and a missing one falls back", () => {
@@ -252,6 +267,6 @@ test("the built-in policy itself is valid and has a positive catch-all", () => {
   const result = parsePolicy(serializePolicy(BUILT_IN_CATEGORIES));
   assert.equal(result.ok, true);
   if (result.ok) {
-    assert.ok(result.categories.some((c) => c.id === ROUTINE_CATEGORY && c.polarity === "positive"));
+    assert.ok(result.categories.some((c) => c.id === "routine_work" && c.polarity === "positive"));
   }
 });

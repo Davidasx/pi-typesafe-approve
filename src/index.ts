@@ -35,7 +35,6 @@ import { createGate, type GateUi } from "./gate.ts";
 import { createFileLogger, trimLogFile, type DecisionLogger } from "./log.ts";
 import {
   BUILT_IN_CATEGORIES,
-  ROUTINE_CATEGORY,
   loadPolicy,
   policyPath,
   serializePolicy,

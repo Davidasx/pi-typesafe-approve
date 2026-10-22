@@ -242,10 +242,9 @@ the scratch directory" from prose into a fact:
 }
 ```
 
-Values are flat strings. **`context` is the one field sent exactly as written**,
-because it is prose addressed to the model and a sentence naming a syntax cannot
-survive being expanded. Every other value is expanded, in `state` and in each
-category's `what` and `examples`. Three substitutions happen, and nothing else:
+Values are flat strings, and **every one of them is expanded** — in `state`, and
+in each category's `what` and `examples`. Three substitutions happen, and nothing
+else:
 
 | Written | Becomes |
 |---|---|
@@ -269,6 +268,12 @@ the fragment named. Handing config text to a shell would make editing
 `policy.json` equivalent to running code, and expansion also runs on paths that
 only display it. `pwd` is answered from `process.cwd()`, which is already the
 physical path `pwd -P` would print, so the common case works without a shell.
+
+The bare form is never expanded, which is what makes prose about the syntax
+possible: `$SCRATCH`, `$HOME`, and `~` all stay exactly as written, so a value can
+say `"${SCRATCH} — also spelled $SCRATCH in commands"` and the note survives. That
+is the only escape needed, and it is the syntax itself rather than a rule to
+remember.
 
 A template with no `${command}` anywhere is rejected: the command would never
 reach the model, and the extension would be judging nothing.
