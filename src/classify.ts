@@ -251,6 +251,8 @@ export function blockedReason(decision: Decision, command: string, rule?: string
     `pi-typesafe-approve blocked this command: ${verdictLine(decision)}.`,
     ...(rule ? [`Rule: ${truncate(rule, 300)}`] : []),
     `Command: ${truncate(command, 300)}`,
-    "The user must approve it. Do not retry the same command, and do not rephrase it to get past this check.",
+    // No claim about who decided. In `block` mode nothing was shown to anyone, so
+    // saying "the user declined" would invent a human who never saw this command.
+    "Do not retry the same command, and do not rephrase it to get past this check; ask the user what they want instead.",
   ].join("\n");
 }

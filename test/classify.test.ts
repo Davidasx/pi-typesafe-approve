@@ -266,5 +266,10 @@ test("the blocked reason is self-contained for the agent", () => {
   assert.match(reason, /Command: rm -rf ~\/Documents/);
   // And it explicitly refuses the rephrase-and-retry loop.
   assert.match(reason, /do not rephrase it to get past this check/);
+  // It must not claim a human made this decision. Under `action: block` the
+  // command is stopped automatically and nobody is ever shown it, so telling the
+  // agent "the user declined" invents a person who never saw it — and invites the
+  // agent to go ask them about something they were never asked.
+  assert.ok(!/the user (must approve|declined|rejected|denied)/i.test(reason));
   assert.ok(!reason.includes("apiKey"));
 });

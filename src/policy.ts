@@ -126,16 +126,6 @@ export const BUILT_IN_CATEGORIES: readonly Category[] = Object.freeze([
     ],
   },
   {
-    id: "scripted_file_edit",
-    polarity: "negative",
-    what: "Edits a file in place with a script instead of the agent's file-editing tools: sed -i, perl -pi, awk with an in-place flag, or an interpreter one-liner that opens a file for writing. Edits must go through the tools so the change can be reviewed as a diff. A purely mechanical, rule-based rewrite is the exception and is not this; neither is reading a file to extract something.",
-    examples: [
-      "sed -i 's/old/new/' src/index.ts",
-      "perl -pi -e 's/a/b/g' config.yml",
-      "python3 - <<'PY' … Path('x').write_text(...) … PY",
-    ],
-  },
-  {
     id: "scratch_misplaced",
     polarity: "negative",
     what: "Leaves a temporary or scratch file inside the project directory instead of the system temporary directory: a name containing tmp, temp, or scratch, or ending in .tmp or .log, written into the repository. Creating an ordinary source or data file inside the project is not this, and writing scratch files under /tmp is expected.",
