@@ -91,6 +91,18 @@ export const BUILT_IN_CATEGORIES: readonly Category[] = Object.freeze([
     examples: ["cat ~/.ssh/id_ed25519", "env | sort", "grep -n KEY ~/.zshrc", 'echo "$API_KEY" > out.txt'],
   },
   {
+    id: "credential_handled_safely",
+    polarity: "positive",
+    what: "Inspects a credential's presence or shape without revealing it. Tests whether a variable is set or empty, reports its length, prints a short prefix or suffix to identify which kind of key it is, checks that two variables hold the same value without printing either, or digests it. This is ordinary diagnostics and the opposite of secret_exposure: the value never reaches the terminal, a file, a log line, or an argument, so nothing leaks. What separates the two is whether the output can be turned back into the secret. A length, a boolean, a digest, or a handful of leading characters cannot; printing the variable, exporting it, or writing it somewhere can. A short prefix shown deliberately to tell one key format from another is safe, but the whole value or a long run of it is not, and neither is a command that dumps every variable to look for one.",
+    examples: [
+      '[ -n "$API_KEY" ] && echo set || echo unset',
+      'echo "length: ${#API_KEY}"',
+      'echo "$API_KEY" | sha256sum',
+      'printf \'%s\' "$TOKEN" | wc -c',
+      'for v in API_KEY TOKEN; do val="${!v}"; [ -n "$val" ] && echo "$v set (${#val} chars)"; done',
+    ],
+  },
+  {
     id: "security_weakened",
     polarity: "negative",
     what: "Turns a security control off or loosens it: flushes or disables a firewall, makes something world-writable or world-readable that was not, disables auditing or mandatory access control, or removes a lock or a key.",
