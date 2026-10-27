@@ -21,6 +21,7 @@
     "src",
     "config.example.json",
     "README.md",
+    "README.zh-CN.md",
     "LICENSE"
   ],
   "pi": {

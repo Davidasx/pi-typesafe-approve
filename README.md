@@ -1,5 +1,9 @@
 # pi-typesafe-approve
 
+**English** | [中文](README.zh-CN.md)
+
+> **Promotion statement**: this project is fully open source (MIT) and is promoted on public boards under the [LINUX DO](https://linux.do) community open-source promotion rules. Thanks to the community for the feedback behind it.
+
 Auto-approve routine Bash commands with a **System One** decision model, and send everything else to you.
 
 A System One model does not write text. It answers typed questions about a state you give it and returns a probability for every option. That makes it a cheap, fast triage layer in front of every shell command:
