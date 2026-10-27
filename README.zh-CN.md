@@ -109,8 +109,6 @@ pi install git:github.com/Davidasx/pi-typesafe-approve
 
 八个拦停类 —— 不可恢复的破坏、凭据泄露、削弱安全、来自别处并直接运行的代码、提权、服务中断、越界写入、错放临时文件 —— 以及四个放行类：`credential_handled_safely`、`permission_tightened`、`scoped_process_control`、`routine_work`。
 
-这些分类刻意避开争议：没有任何一条规定你的工作方式，除了临时文件那一条之外，对 git 和 `/tmp` 也不作要求。
-
 ### 状态
 
 ```json

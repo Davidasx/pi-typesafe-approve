@@ -109,8 +109,6 @@ So when a command keeps getting stopped and you believe it is fine, **give it a 
 
 Eight stops — unrecoverable destruction, secret exposure, weakened security, code fetched from elsewhere and run, privilege escalation, service disruption, writes outside the allowed paths, misplaced scratch files — and four allows: `credential_handled_safely`, `permission_tightened`, `scoped_process_control`, and `routine_work`.
 
-They avoid arguments: nothing here mandates a working style, and there is no rule about git or `/tmp` beyond the scratch category.
-
 ### The state
 
 ```json
