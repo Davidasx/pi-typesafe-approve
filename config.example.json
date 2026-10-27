@@ -7,7 +7,7 @@
     "$ are ignored by the loader and exist only as notes.",
     "",
     "There are no provider presets. Give the whole request URL in 'endpoint'.",
-    "Known values, as of September 2026 (see README for the table):",
+    "Known values (see README for the table):",
     "  TypeSafe official  https://api.typesafe.ai/v1/systemone      jev-latest",
     "  OpenRouter         https://openrouter.ai/api/v1/systemone    ~typesafe/jev-latest",
     "  Ollama             http://127.0.0.1:11434/v1/systemone       your model",

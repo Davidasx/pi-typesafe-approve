@@ -6,7 +6,7 @@
 
 用 **System One** 决策模型自动放行常规 Bash 命令，其余全部交给你判断。
 
-System One 模型不写文本。它针对你给的一份 state 回答若干带类型的问题，为每个选项返回一个概率。这恰好适合做一层便宜、快速的分诊，挡在每条 shell 命令前面：
+System One 模型不写文本。它针对你给的一份状态（state）回答若干带类型的问题，为每个选项返回一个概率。这恰好适合做一层便宜、快速的分诊，挡在每条 shell 命令前面：
 
 - `ls`、`git status`、`npm ci` 直接执行，不弹窗；
 - 被判为有风险的一律停下来问你 —— 包括它能看穿的混淆写法（`$'\x72\x6d' -rf /`、`echo … | base64 -d | sh`）；
@@ -80,13 +80,13 @@ pi install git:github.com/Davidasx/pi-typesafe-approve
     {
       "id": "secret_exposure",
       "polarity": "negative",
-      "what": "读取、打印、复制或传输凭据、私钥、令牌……",
+      "what": "Reads, prints, copies, or transmits a credential, private key, token, ...",
       "examples": ["cat ~/.ssh/id_ed25519", "env | sort"]
     },
     {
       "id": "permission_tightened",
       "polarity": "positive",
-      "what": "把本来就属于用户的路径改得更严格，例如 chmod 600 或 700。",
+      "what": "Makes a file less accessible than it was, on a path already the user's: chmod 600 or 700.",
       "examples": ["chmod 600 ~/.ssh/id_ed25519"]
     }
   ]
@@ -111,11 +111,11 @@ pi install git:github.com/Davidasx/pi-typesafe-approve
 
 这些分类刻意避开争议：没有任何一条规定你的工作方式，除了临时文件那一条之外，对 git 和 `/tmp` 也不作要求。
 
-### state
+### 状态
 
 ```json
 "state": {
-  "context": "正在审查一条 AI 编码 agent 想在用户机器上运行的 shell 命令……",
+  "context": "Reviewing one shell command an AI coding agent wants to run ...",
   "command": "${command}",
   "working_directory": "$(pwd -P)"
 }
