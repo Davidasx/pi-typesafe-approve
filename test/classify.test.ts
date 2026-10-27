@@ -3,7 +3,7 @@ import assert from "node:assert/strict";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import {
   OUTCOME_QUESTION,
-  blockedReason,
+  refusalReason,
   buildQuestions,
   buildState,
   decide,
@@ -260,15 +260,31 @@ test("a clear violation reads as one line, category first", () => {
 
 test("the blocked reason is self-contained for the agent", () => {
   const decision = decide(answer("irreversible_destruction"), config, negative);
-  const reason = blockedReason(decision, "rm -rf ~/Documents", BUILT_IN_CATEGORIES[0]?.what);
+  const reason = refusalReason(
+    decision,
+    "rm -rf ~/Documents",
+    BUILT_IN_CATEGORIES[0]?.what,
+    "pi-typesafe-approve blocked this command automatically; nobody was asked.",
+  );
 
-  assert.match(reason, /^pi-typesafe-approve blocked this command: irreversible_destruction 100% ≥ 30% · stop\./);
+  // Every refusal has the same field order, so the only line that differs between
+  // the automatic stop, a decline, and a timeout is the first one.
+  assert.match(reason, /^pi-typesafe-approve blocked this command automatically/);
+  assert.match(reason, /\nVerdict: irreversible_destruction 100% ≥ 30% · stop\./);
   // The rule text is included, so the agent can avoid the pattern rather than
   // guess at it.
   assert.match(reason, /Rule: Destroys data that cannot be recovered/);
   assert.match(reason, /Command: rm -rf ~\/Documents/);
-  // And it explicitly refuses the rephrase-and-retry loop.
-  assert.match(reason, /do not rephrase it to get past this check/);
+  // The verdict is described as a probability that can be wrong, and a rewrite is
+  // allowed when the agent thinks the check misread the command — a wrong stop that
+  // may not be questioned is worse than a stop that may.
+  assert.match(reason, /probability from a model, not a ruling/);
+  assert.match(reason, /may be wrong/);
+  assert.match(reason, /you may rephrase or restructure it and try again/);
+  // But it must still forbid sitting on the prompt, and must ask for the user to be
+  // told rather than for a human to be fetched.
+  assert.match(reason, /do not sit and wait/);
+  assert.match(reason, /let the user know which command was held/);
   // It must not claim a human made this decision. Under `action: block` the
   // command is stopped automatically and nobody is ever shown it, so telling the
   // agent "the user declined" invents a person who never saw it — and invites the

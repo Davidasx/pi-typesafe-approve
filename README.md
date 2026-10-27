@@ -79,6 +79,7 @@ An unset or empty `${NAME}` *is* an error, not an empty bearer token, because a 
   "thresholds": { "violation": 0.3 },
   "action": "escalate",
   "noUiFallback": "block",
+  "promptTimeoutSeconds": 300,
   "failMode": "open"
 }
 ```
@@ -111,6 +112,15 @@ Measured on 16 commands against the live model, the two groups do not overlap mu
 | `allow` | Report the finding and let the command run, the same as `monitor`. |
 
 These are two genuinely different axes, not one knob spelled twice: `escalate` with a UI *prompts*, `monitor` never prompts even with a UI, and `block` ignores `noUiFallback` entirely.
+
+`promptTimeoutSeconds` decides how long a prompt waits for a human before deciding itself (default 300, `0` waits forever):
+
+| Value | Behavior |
+|---|---|
+| `300` | Pi closes the dialog after five minutes, with a live countdown. Default. |
+| `0` | No limit — the turn stays open until somebody answers. |
+
+An expired prompt counts as a decline, because an unattended command must not run. The agent is told which of the two happened, and the wording differs on purpose: a decline means the user looked and said no, while a timeout means nobody was there, so the agent is told to leave that command out and carry on with the rest of the work instead of retrying or waiting. The transcript records them differently too — `declined by the user` versus `no answer in 300s, refused`.
 
 `failMode` decides what happens when the model cannot be reached:
 

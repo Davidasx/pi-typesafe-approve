@@ -62,6 +62,7 @@ export type ApproveScreenId =
   | "edit-timeout"
   | "edit-cache"
   | "edit-violation"
+  | "edit-prompt-timeout"
   ;
 
 export type ApproveActionId =
@@ -73,6 +74,7 @@ export type ApproveActionId =
   | "apply-timeout"
   | "apply-cache"
   | "apply-violation"
+  | "apply-prompt-timeout"
 
   | "policy-show"
   | "policy-edit"
@@ -90,6 +92,7 @@ const EDIT_SCREENS: Record<string, ApproveScreenId> = {
   timeoutMs: "edit-timeout",
   cacheSize: "edit-cache",
   "thresholds.violation": "edit-violation",
+  promptTimeoutSeconds: "edit-prompt-timeout",
 };
 
 /** Enumerated settings: the label shown, and the value it stores. */
@@ -194,6 +197,12 @@ export function createApproveMenu(
             ),
             enumItem("action", "Action on a trigger", "What happens when a threshold is crossed.", config.action, "action"),
             enumItem("noUiFallback", "Without a UI", "What escalating does when nobody can be asked.", config.noUiFallback, "noUiFallback"),
+            textItem(
+              "promptTimeoutSeconds",
+              "Prompt timeout",
+              "Seconds a prompt waits before refusing on its own; 0 waits forever.",
+              `${config.promptTimeoutSeconds} s`,
+            ),
             enumItem("failMode", "If the model is unreachable", "The check cannot run.", config.failMode, "failMode"),
             enumItem("logDecisions", "Log decisions", "Append each verdict to decisions.jsonl.", bool(config.logDecisions), "logDecisions"),
             enumItem("debug", "Debug logging", "Also log request traces for troubleshooting.", bool(config.debug), "debug"),
@@ -308,6 +317,14 @@ export function createApproveMenu(
             String(deps.getState().config.thresholds.violation) +
             ". Lower stops more commands.",
         ),
+      "edit-prompt-timeout": () =>
+        input(
+          "Prompt timeout (seconds)",
+          "300",
+          "apply-prompt-timeout",
+          String(deps.getState().config.promptTimeoutSeconds),
+          "How long a prompt waits before it refuses on its own. 0 waits forever.",
+        ),
     },
 
     actions: {
@@ -352,6 +369,13 @@ export function createApproveMenu(
         applyNumber(ctx, value, { min: 0, max: 1, label: "Threshold" }, (violation) => ({
           thresholds: { violation },
         })),
+      "apply-prompt-timeout": ({ ctx, value }) =>
+        applyNumber(
+          ctx,
+          value,
+          { min: 0, max: 86_400, label: "Prompt timeout" },
+          (promptTimeoutSeconds) => ({ promptTimeoutSeconds }),
+        ),
 
       "policy-show": () => ({ kind: "to", screen: "policy-view" }),
       "policy-back": () => back,

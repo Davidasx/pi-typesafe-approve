@@ -373,7 +373,8 @@ async function runManualTest(
 function toGateUi(ctx: ExtensionContext): GateUi {
   return {
     hasUI: ctx.hasUI,
-    confirm: (title, message) => ctx.ui.confirm(title, message),
+    confirm: (title, message, timeoutMs) =>
+      ctx.ui.confirm(title, message, timeoutMs === undefined ? {} : { timeout: timeoutMs }),
     notify: (message, kind) => ctx.ui.notify(message, kind),
     ...(ctx.signal ? { signal: ctx.signal } : {}),
   };

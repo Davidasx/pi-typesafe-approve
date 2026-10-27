@@ -210,6 +210,17 @@ export interface ApproveConfig {
   action: "escalate" | "monitor" | "block";
   /** What `escalate` does when there is no UI to ask (print/JSON mode, subagents). */
   noUiFallback: "block" | "allow";
+  /**
+   * Seconds to wait for a human before a prompt decides itself, or 0 to wait
+   * indefinitely. Applies only to `escalate` with a UI.
+   *
+   * An unanswered prompt used to hold the turn open forever, which is the worst
+   * outcome when nobody is at the keyboard: the agent is blocked, no work gets
+   * done, and the session looks alive while going nowhere. Timing out counts as
+   * a decline, and the agent is told the difference between "the user said no"
+   * and "nobody was there", because those call for opposite next moves.
+   */
+  promptTimeoutSeconds: number;
   /** What to do when the model cannot be reached. */
   failMode: "open" | "closed";
 

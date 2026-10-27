@@ -144,6 +144,7 @@ test("the settings screen lists every option, enums with values and text without
       "thresholds.violation",
       "action",
       "noUiFallback",
+      "promptTimeoutSeconds",
       "failMode",
       "logDecisions",
       "debug",
@@ -188,6 +189,7 @@ test("text rows transition to the matching editor screen", () => {
     timeoutMs: "edit-timeout",
     cacheSize: "edit-cache",
     "thresholds.violation": "edit-violation",
+    promptTimeoutSeconds: "edit-prompt-timeout",
   };
   const h = harness();
   for (const [itemId, expected] of Object.entries(cases)) {
@@ -229,6 +231,13 @@ test("a valid number is written, and thresholds keep their sibling", async () =>
 
   await h.run("apply-cache", { value: "0" });
   assert.deepEqual(h.updates.at(-1), { cacheSize: 0 });
+
+  // 0 is meaningful for the prompt timeout — it means wait forever — so it must be
+  // accepted here even though 0 is a nonsensical request timeout.
+  await h.run("apply-prompt-timeout", { value: "0" });
+  assert.deepEqual(h.updates.at(-1), { promptTimeoutSeconds: 0 });
+  await h.run("apply-prompt-timeout", { value: "90" });
+  assert.deepEqual(h.updates.at(-1), { promptTimeoutSeconds: 90 });
 });
 
 // ── secrets ────────────────────────────────────────────────────────────────

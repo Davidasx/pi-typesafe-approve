@@ -197,9 +197,18 @@ export function summarize(command: string, decision: Decision): string {
  * because one line per command would bury the interesting ones.
  */
 export function outcomeNote(
-  outcome: "approved" | "declined" | "blocked" | "monitor" | "no-ui" | "allow",
+  outcome:
+    | "approved"
+    | "declined"
+    | "timed-out"
+    | "blocked"
+    | "monitor"
+    | "no-ui"
+    | "allow",
   command: string,
   decision: Decision,
+  /** Seconds the prompt waited, for the timed-out wording. */
+  timeoutSeconds = 0,
 ): string | undefined {
   const verdict = verdictLine(decision);
   const what = truncate(command, 120);
@@ -208,6 +217,11 @@ export function outcomeNote(
       return `pi-typesafe-approve · approved by the user · ${verdict} — ${what}`;
     case "declined":
       return `pi-typesafe-approve · declined by the user · ${verdict} — ${what}`;
+    case "timed-out":
+      // Distinct from declined on purpose: nobody said no, nobody was there. The
+      // length is included because "5 minutes with no answer" and "one minute with
+      // no answer" are different pieces of information about the session.
+      return `pi-typesafe-approve · no answer in ${Math.round(timeoutSeconds)}s, refused · ${verdict} — ${what}`;
     case "blocked":
       return `pi-typesafe-approve · blocked automatically · ${verdict} — ${what}`;
     case "monitor":
@@ -287,25 +301,52 @@ function truncate(value: string, max: number): string {
 }
 
 /**
- * Reason text handed back to the agent when a command is blocked.
+ * The advice every refusal carries, whatever produced it.
  *
- * The agent sees only this string, so it has to be useful on its own: what was
- * decided, which category drove it, and the rule that category stands for. The
- * rule text matters because the agent can then do something smarter than retrying
- * the same command — avoid the pattern, or ask the user, who is the only one who
- * can change the policy.
+ * Two things it must not do. It must not claim the verdict is correct — the check
+ * is a probability from a model, it is sometimes wrong, and an agent that treats a
+ * wrong stop as law will work around a correct instruction instead of fixing it.
+ * And it must not demand a human, which strands an unattended session: the agent is
+ * told to leave the command out, get on with the rest, and tell the user by whatever
+ * channel it has.
  *
- * It still does not enumerate what would let the command through. A blocked
- * command should go back to the human, not teach the caller how to rephrase its
- * way past the gate.
+ * It says nothing about what happened, because the caller already said that in the
+ * first line of the reason; repeating it read as a stutter.
  */
-export function blockedReason(decision: Decision, command: string, rule?: string): string {
+function guidance(): string {
   return [
-    `pi-typesafe-approve blocked this command: ${verdictLine(decision)}.`,
-    ...(rule ? [`Rule: ${truncate(rule, 300)}`] : []),
+    "That verdict is a probability from a model, not a ruling, and it may be wrong.",
+    "If you believe it is wrong because of how the command was written, you may rephrase or restructure it and try again — say what you changed and why. If the verdict holds up, do not keep pushing at it.",
+    "Either way, do not sit and wait for an answer. Do whatever else the task still allows that does not depend on this command, then let the user know which command was held and what it needs from them.",
+  ].join("\n");
+}
+
+/**
+ * Reason text handed back to the agent when a command did not run.
+ *
+ * The agent sees only this string, so it has to be useful on its own: what happened,
+ * the verdict behind it, the command, and the rule that category stands for. The
+ * rule text matters because the agent can then do something smarter than retrying
+ * the same command — avoid the pattern, or raise it with the user.
+ *
+ * Every refusal has this shape, with `why` as the only line that differs, so a
+ * reader sees the same fields in the same order whether the gate stopped the
+ * command itself, a human declined it, or nobody answered. It still does not
+ * enumerate what would let the command through.
+ *
+ * The preamble avoids repeating the verdict, because it has its own line.
+ */
+export function refusalReason(
+  decision: Decision,
+  command: string,
+  rule: string | undefined,
+  why: string,
+): string {
+  return [
+    why,
+    `Verdict: ${verdictLine(decision)}.`,
     `Command: ${truncate(command, 300)}`,
-    // No claim about who decided. In `block` mode nothing was shown to anyone, so
-    // saying "the user declined" would invent a human who never saw this command.
-    "Do not retry the same command, and do not rephrase it to get past this check; ask the user what they want instead.",
+    ...(rule ? [`Rule: ${truncate(rule, 300)}`] : []),
+    guidance(),
   ].join("\n");
 }

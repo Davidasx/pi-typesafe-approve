@@ -33,6 +33,7 @@ export const DEFAULT_CONFIG: ApproveConfig = {
   thresholds: { violation: 0.3 },
   action: "escalate",
   noUiFallback: "block",
+  promptTimeoutSeconds: 300,
   failMode: "open",
 
   logDecisions: true,
@@ -130,6 +131,7 @@ function normalize(raw: Record<string, unknown>): ApproveConfig {
     thresholds: { violation: unitInterval(thresholds.violation, d.thresholds.violation) },
     action: oneOf(raw.action, ["escalate", "monitor", "block"], d.action),
     noUiFallback: oneOf(raw.noUiFallback, ["block", "allow"], d.noUiFallback),
+    promptTimeoutSeconds: nonNegativeInt(raw.promptTimeoutSeconds, d.promptTimeoutSeconds),
     failMode: oneOf(raw.failMode, ["open", "closed"], d.failMode),
     logDecisions: bool(raw.logDecisions, d.logDecisions),
     debug: bool(raw.debug, d.debug),
@@ -170,6 +172,11 @@ function collectProblems(raw: Record<string, unknown>): string[] {
   expect("thresholds", isRecord, "must be an object");
   expect("action", (v) => isString(v) && ["escalate", "monitor", "block"].includes(v as string), 'must be "escalate", "monitor", or "block"');
   expect("noUiFallback", (v) => isString(v) && ["block", "allow"].includes(v as string), 'must be "block" or "allow"');
+  expect(
+    "promptTimeoutSeconds",
+    (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
+    "must be a number of seconds, 0 or more (0 waits indefinitely)",
+  );
   expect("failMode", (v) => isString(v) && ["open", "closed"].includes(v as string), 'must be "open" or "closed"');
   expect("logDecisions", isBool, "must be a boolean");
   expect("debug", isBool, "must be a boolean");

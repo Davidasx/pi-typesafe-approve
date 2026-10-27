@@ -35,6 +35,8 @@ interface HarnessOptions {
   hasUI?: boolean;
   configured?: boolean;
   confirm?: boolean;
+  /** How long the fake dialog appears to sit before answering, in milliseconds. */
+  answerAfterMs?: number;
 }
 
 function harness(options: HarnessOptions = {}) {
@@ -42,13 +44,19 @@ function harness(options: HarnessOptions = {}) {
   const log: unknown[] = [];
   const notes: string[] = [];
   const prompts: string[] = [];
+  const timeouts: (number | undefined)[] = [];
+  // A controllable clock: the gate asks for elapsed time after the dialog closes,
+  // so advancing it here is how a timeout is produced without waiting for one.
+  let clockMs = 1_000_000;
   let calls = 0;
 
   const ui: GateUi = {
     hasUI: options.hasUI ?? true,
-    confirm: async (title, message) => {
+    confirm: async (title, message, timeoutMs) => {
       // Record both: the verdict lives in the title, and the message is the body.
       prompts.push(`${title}\n${message}`);
+      timeouts.push(timeoutMs);
+      clockMs += options.answerAfterMs ?? 0;
       return options.confirm ?? false;
     },
     notify: (message) => notes.push(message),
@@ -71,6 +79,7 @@ function harness(options: HarnessOptions = {}) {
       return typeof answer === "function" ? answer() : answer;
     },
     logger: { record: (entry) => log.push(entry), debug: () => {} },
+    now: () => clockMs,
   });
 
   return {
@@ -82,6 +91,7 @@ function harness(options: HarnessOptions = {}) {
     log,
     notes,
     prompts,
+    timeouts,
     get calls() {
       return calls;
     },
@@ -124,6 +134,55 @@ test("an escalated command blocks when the user declines", async () => {
   // the command itself.
   assert.equal(h.prompts.length, 1, "exactly one prompt");
   assert.match(h.prompts[0] ?? "", /irreversible_destruction \d+%/, "the verdict is in the dialog");
+  // The configured limit reaches the dialog, so Pi can count down and dismiss it.
+  assert.equal(h.timeouts[0], DEFAULT_CONFIG.promptTimeoutSeconds * 1000);
+  assert.ok(!/no answer/i.test(result?.reason ?? ""), "a click is not a timeout");
+});
+
+test("an unanswered prompt becomes a decline that says nobody was there", async () => {
+  // The dialog resolves false when it closes itself, exactly as a click on No does,
+  // so the gate has to infer the difference from elapsed time. Here the fake clock
+  // advances by the full limit.
+  const h = harness({
+    answer: modelAnswer("irreversible_destruction"),
+    confirm: false,
+    answerAfterMs: DEFAULT_CONFIG.promptTimeoutSeconds * 1000,
+  });
+  const result = await h.gate(bash("rm -rf /"), h.ui);
+  assert.equal(result?.block, true);
+  // The agent must not be told a human rejected this, and must not be told to sit
+  // and wait: the point of the timeout is that the turn keeps moving.
+  assert.match(result?.reason ?? "", /nobody answered within \d+ seconds/);
+  assert.ok(!/user declined/i.test(result?.reason ?? ""), "nobody declined it");
+  assert.match(result?.reason ?? "", /usually means the user is away/);
+  assert.match(result?.reason ?? "", /Do whatever else the task still allows/);
+  // The transcript distinguishes it too, so a later reading can tell the two apart.
+  assert.equal(h.notes.length, 1);
+  assert.match(h.notes[0] ?? "", /no answer in \d+s, refused/);
+});
+
+test("a click just before the limit is still a decline", async () => {
+  // Answering quickly must not be mistaken for a timeout, which is the failure mode
+  // a naive "false means timed out" rule would produce.
+  const h = harness({
+    answer: modelAnswer("irreversible_destruction"),
+    confirm: false,
+    answerAfterMs: 1000,
+  });
+  const result = await h.gate(bash("rm -rf /"), h.ui);
+  assert.match(result?.reason ?? "", /user declined/i);
+  assert.ok(!/did not answer/i.test(result?.reason ?? ""));
+  assert.match(h.notes[0] ?? "", /declined by the user/);
+});
+
+test("a zero timeout leaves the dialog with no limit", async () => {
+  const h = harness({
+    answer: modelAnswer("irreversible_destruction"),
+    confirm: false,
+    config: { promptTimeoutSeconds: 0 },
+  });
+  await h.gate(bash("rm -rf /"), h.ui);
+  assert.equal(h.timeouts[0], undefined, "no timeout is passed when disabled");
 });
 
 test("an escalated command runs when the user approves", async () => {

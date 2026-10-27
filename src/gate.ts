@@ -47,13 +47,12 @@
 
 import { createHash } from "node:crypto";
 import {
-  blockedReason,
+  refusalReason,
   buildQuestions,
   buildState,
   decide,
   negativeSet,
   outcomeNote,
-  signalsOf,
   verdictLine,
 } from "./classify.ts";
 import type { DecisionLogRecord, DecisionLogger } from "./log.ts";
@@ -84,7 +83,12 @@ type LogSink = (decision: Decision, action: LogAction, extra?: LogExtra) => void
 
 export interface GateUi {
   hasUI: boolean;
-  confirm(title: string, message: string): Promise<boolean>;
+  /**
+   * Ask the user. `timeoutMs` closes the dialog automatically after that long,
+   * which resolves `false` — the host cannot distinguish that from a click, so
+   * the caller must decide what an unanswered prompt means.
+   */
+  confirm(title: string, message: string, timeoutMs?: number): Promise<boolean>;
   notify(message: string, kind?: "info" | "warning" | "error"): void;
   /** The active turn's abort signal, when there is one. */
   signal?: AbortSignal;
@@ -276,34 +280,54 @@ export function createGate(deps: GateDeps) {
       // The dialog is a `Text` component that wraps but cannot scroll, so it carries
       // the verdict and nothing else. The verdict is the one thing the user cannot
       // read off the command themselves, which is why it is the part that stays.
-      const approved = await ui.confirm(`Run this command?\n${verdictLine(decision)}`, "");
-      log(decision, approved ? "allow" : "block", extra);
+      const timeoutSeconds = config.promptTimeoutSeconds;
+      const timeoutMs = timeoutSeconds > 0 ? timeoutSeconds * 1000 : undefined;
+      const askedAt = now();
+      const approved = await ui.confirm(
+        `Run this command?\n${verdictLine(decision)}`,
+        "",
+        timeoutMs,
+      );
+      // `confirm` answers false both for a click on No and for a dialog that timed
+      // out, so the elapsed time is what separates them. The slack absorbs the
+      // milliseconds between the dialog closing and this line running.
+      const elapsed = now() - askedAt;
+      const timedOut = !approved && timeoutMs !== undefined && elapsed >= timeoutMs - 500;
+      log(decision, approved ? "allow" : "block", { ...extra, ...(timedOut ? { timedOut: true } : {}) });
       // Recorded either way: a human made this decision, and the transcript should
       // show which one and for what, so a later reading can tell the two apart.
-      ui.notify(
-        outcomeNote(approved ? "approved" : "declined", command, decision) ?? verdictLine(decision),
-        "warning",
+      const note = outcomeNote(
+        approved ? "approved" : timedOut ? "timed-out" : "declined",
+        command,
+        decision,
+        timeoutSeconds,
       );
-      return approved
-        ? undefined
-        : {
-            block: true,
-            reason: [
-              "The user declined this command at the pi-typesafe-approve risk check.",
-              `Verdict: ${verdictLine(decision)}.`,
-              "Do not retry it, and do not rephrase it to get past the check; ask the user what they want instead.",
-            ].join("\n"),
-          };
+      if (note !== undefined) ui.notify(note, "warning");
+      if (approved) return undefined;
+      return {
+        block: true,
+        reason: refusalReason(
+          decision,
+          command,
+          rule,
+          timedOut
+            ? `pi-typesafe-approve held this command because nobody answered within ${timeoutSeconds} seconds, which usually means the user is away rather than unwilling.`
+            : "pi-typesafe-approve held this command because the user declined it.",
+        ),
+      };
     }
 
     log(decision, "block", extra);
     // Nobody was asked, so this line is how the transcript distinguishes a command
     // the gate stopped on its own from one a human turned down.
-    ui.notify(
-      outcomeNote("blocked", command, decision) ?? blockedReason(decision, command, rule),
-      "warning",
+    const reason = refusalReason(
+      decision,
+      command,
+      rule,
+      "pi-typesafe-approve blocked this command automatically; nobody was asked.",
     );
-    return { block: true, reason: blockedReason(decision, command, rule) };
+    ui.notify(outcomeNote("blocked", command, decision) ?? reason, "warning");
+    return { block: true, reason };
   }
 }
 
