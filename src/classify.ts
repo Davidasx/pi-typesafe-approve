@@ -277,13 +277,6 @@ export function verdictLine(decision: Decision): string {
   return `${amount}${detail} · stop`;
 }
 
-/** The `violation=… most likely …` portion, without the command. */
-export function signalsOf(decision: Decision): string {
-  const signals = decision.signals;
-  return signals.worstCategory && (signals.worstProbability ?? 0) > 0
-    ? `${signals.worstCategory} ${percent(signals.worstProbability ?? 0)}`
-    : `${signals.label ?? "unknown"} ${percent(signals.labelConfidence ?? 0)}`;
-}
 
 function limitOf(decision: Decision): number {
   const first = decision.reasons[0] ?? "";

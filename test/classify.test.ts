@@ -9,7 +9,6 @@ import {
   decide,
   negativeIds,
   negativeSet,
-  signalsOf,
   summarize,
   verdictLine,
 } from "../src/classify.ts";
@@ -211,7 +210,6 @@ test("one line per decision, for the prompt and the log", () => {
     "secret_exposure 100% ≥ 30% · stop — cat ~/.ssh/id_ed25519",
   );
   assert.equal(verdictLine(decision), "secret_exposure 100% ≥ 30% · stop");
-  assert.equal(signalsOf(decision), "secret_exposure 100%");
 
   const allowed = decide(answer("routine_work"), config, negative);
   assert.equal(verdictLine(allowed), "allow · routine_work 100%");
