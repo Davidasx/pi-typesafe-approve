@@ -5,6 +5,7 @@
 
 import { test } from "node:test";
 import assert from "node:assert/strict";
+import { runMenu } from "@narumitw/pi-tui-kit";
 import { DEFAULT_CONFIG } from "../src/config.ts";
 import { BUILT_IN_CATEGORIES, DEFAULT_STATE } from "../src/policy.ts";
 import {
@@ -136,6 +137,7 @@ test("the settings screen lists every option, enums with values and text without
     items.map((item) => item.id),
     [
       "enabled",
+      "backend",
       "endpoint",
       "model",
       "apiKey",
@@ -162,6 +164,7 @@ test("the settings screen lists every option, enums with values and text without
 test("every enumerated item's stored value is reachable from its labels", async () => {
   const cases: Array<[string, string, unknown]> = [
     ["enabled", "Off", false],
+    ["backend", "pi", "pi"],
     ["logDecisions", "On", true],
     ["action", "monitor", "monitor"],
     ["noUiFallback", "allow", "allow"],
@@ -196,6 +199,68 @@ test("text rows transition to the matching editor screen", () => {
     assert.deepEqual(h.run("open-edit", { itemId }), { kind: "to", screen: expected }, itemId);
   }
   assert.deepEqual(h.run("open-edit", { itemId: "unknown" }), { kind: "stay" });
+});
+
+test("switching backend immediately rebuilds fields, hints and status without losing direct values", async () => {
+  const h = harness({ endpoint: "https://direct.test/systemone", apiKey: "${DIRECT_KEY}", model: "jev-latest" });
+  const menu = createApproveMenu(h.deps);
+  const settings = () => {
+    const built = menu.screens.settings({ state: h.current } as never);
+    assert.equal(built.kind, "settings");
+    if (built.kind !== "settings") throw new Error("Expected settings screen");
+    return built;
+  };
+  assert.ok(settings().items.some((item) => item.id === "endpoint"));
+  assert.deepEqual(await h.run("set-enum", { itemId: "backend", value: "pi" }), { kind: "stay" });
+  assert.ok(!settings().items.some((item) => item.id === "endpoint" || item.id === "apiKey"));
+  assert.match(settings().items.find((item) => item.id === "model")?.description ?? "", /first slash/);
+  assert.match(JSON.stringify(screen(h, "edit-model")), /provider\/modelId/);
+  assert.ok(!statusLine(h.current).includes("DIRECT_KEY"));
+  assert.equal(endpointLine(h.current.config), "Pi classifier · model jev-latest");
+  await h.run("set-enum", { itemId: "backend", value: "direct" });
+  assert.ok(settings().items.some((item) => item.id === "endpoint"));
+  assert.ok(settings().items.some((item) => item.id === "apiKey"));
+  assert.equal(h.current.config.endpoint, "https://direct.test/systemone");
+  assert.equal(h.current.config.apiKey, "${DIRECT_KEY}");
+});
+
+test("the actual TUI runtime rebuilds the settings component immediately after backend changes", async () => {
+  const h = harness({ endpoint: "https://direct.test/systemone", apiKey: "${DIRECT_KEY}" });
+  const definition = createApproveMenu(h.deps);
+  const originalSettings = definition.screens.settings;
+  const renderedFields: string[][] = [];
+  definition.start = "settings";
+  definition.screens.settings = (context) => {
+    const built = originalSettings(context);
+    if (built.kind === "settings") renderedFields.push(built.items.map((item) => item.id));
+    return built;
+  };
+  let screens = 0;
+  const ctx = {
+    ...h.ctx,
+    ui: {
+      ...h.ctx.ui,
+      custom: async (factory: Function) => new Promise((resolve, reject) => {
+        const matches = (data: string, action: string) =>
+          (data === "\r" && action === "tui.select.confirm") ||
+          (data === "\u001b[B" && action === "tui.select.down") ||
+          (data === "\u001b" && action === "tui.select.cancel");
+        const component = factory({ requestRender() {} }, {}, { matches }, resolve);
+        screens += 1;
+        if (screens === 1) component.handleInput("\u001b[B"); // Enabled -> Backend
+        component.handleInput(screens <= 2 ? "\r" : "\u001b");
+        component.waitForPending().catch(reject);
+      }),
+    },
+  };
+  const result = await runMenu(ctx as never, definition, { getState: () => h.current });
+  assert.equal(result.kind, "closed");
+  assert.equal(screens, 3);
+  assert.ok(renderedFields[0]?.includes("endpoint"));
+  assert.ok(!renderedFields[1]?.includes("endpoint"));
+  assert.ok(!renderedFields[1]?.includes("apiKey"));
+  assert.ok(renderedFields[2]?.includes("endpoint"));
+  assert.deepEqual(h.updates, [{ backend: "pi" }, { backend: "direct" }]);
 });
 
 // ── edits ──────────────────────────────────────────────────────────────────

@@ -83,6 +83,7 @@ function harness(options: HarnessOptions = {}) {
   });
 
   return {
+    config,
     gate,
     ui,
     get configReads() {
@@ -280,6 +281,20 @@ test("a repeated command is served from the cache", async () => {
   await h.gate(bash("rm -rf /"), h.ui);
   await h.gate(bash("rm -rf /"), h.ui);
   assert.equal(h.calls, 1);
+});
+
+test("backend and Pi model identity isolate cached verdicts", async () => {
+  const h = harness({ config: { model: "typesafe/jev-latest" } });
+  await h.gate(bash("ls"), h.ui);
+  h.config.backend = "pi";
+  await h.gate(bash("ls"), h.ui);
+  assert.equal(h.calls, 2, "switching only the backend must miss the cache");
+  h.config.endpoint = "https://ignored.test/systemone";
+  await h.gate(bash("ls"), h.ui);
+  assert.equal(h.calls, 2, "Pi mode ignores direct endpoint changes");
+  h.config.model = "openrouter/~typesafe/jev-latest";
+  await h.gate(bash("ls"), h.ui);
+  assert.equal(h.calls, 3, "provider/model changes must miss the cache");
 });
 
 test("a different command is not served from the cache", async () => {

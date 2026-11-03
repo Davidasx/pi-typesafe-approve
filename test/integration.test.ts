@@ -94,8 +94,13 @@ function harnessContext(cwd: string) {
   };
 }
 
-test("the extension gates a real Bash tool call through a real HTTP endpoint", async () => {
+test("the extension gates Bash through direct HTTP and Pi without backend fallback", async (t) => {
   const stub = await startStub();
+  t.after(() => stub.close());
+  t.after(() => {
+    delete process.env.TSA_TEST_KEY;
+    delete process.env.PI_CODING_AGENT_DIR;
+  });
   const agentDir = mkdtempSync(join(tmpdir(), "tsa-agent-"));
   const cwd = mkdtempSync(join(tmpdir(), "tsa-work-"));
 
@@ -118,14 +123,16 @@ test("the extension gates a real Bash tool call through a real HTTP endpoint", a
 
   const handlers = new Map<string, (event: unknown, ctx: unknown) => unknown>();
   const commands: string[] = [];
+  let commandHandler: (args: string, ctx: unknown) => Promise<void>;
   const { default: extension } = await import("../src/index.ts");
   extension({
     on: ((event: string, handler: (event: unknown, ctx: unknown) => unknown) => {
       handlers.set(event, handler);
       return () => {};
     }) as never,
-    registerCommand: ((name: string) => {
+    registerCommand: ((name: string, command: { handler: typeof commandHandler }) => {
       commands.push(name);
+      commandHandler = command.handler;
     }) as never,
   } as never);
 
@@ -182,7 +189,55 @@ test("the extension gates a real Bash tool call through a real HTTP endpoint", a
   assert.equal(statSync(join(configDir, "decisions.jsonl")).mode & 0o777, 0o600);
   assert.ok(!log.includes("sk-integration"));
 
-  await stub.close();
-  delete process.env.TSA_TEST_KEY;
-  delete process.env.PI_CODING_AGENT_DIR;
+  // Switch live to Pi without endpoint/key: same command must not hit the direct cache.
+  const writeConfig = (config: Record<string, unknown>) => writeFileSync(join(configDir, "config.json"), JSON.stringify(config));
+  writeConfig({ backend: "pi", model: "openrouter/typesafe/jev-1.14", failMode: "closed", logDecisions: true });
+  let piCalls = 0;
+  let providerFails = false;
+  let findModel = true;
+  const piContext = {
+    ...ctx,
+    modelRegistry: {
+      getModelOfType: (...args: string[]) => {
+        assert.deepEqual(args, ["classifier", "openrouter", "typesafe/jev-1.14"]);
+        return findModel ? { type: "classifier", provider: "openrouter", id: "typesafe/jev-1.14" } : undefined;
+      },
+      classify: async () => {
+        piCalls += 1;
+        return providerFails ? { stopReason: "error", errorMessage: "private-provider-error" } : {
+          stopReason: "stop",
+          answers: { outcome: {
+            type: "choice", choice: "routine_work", confidence: 1,
+            probabilities: Object.fromEntries(BUILT_IN_CATEGORIES.map((category) => [category.id, category.id === "routine_work" ? 1 : 0])),
+          } },
+          usage: { input: 20, output: 1, cost: { total: 0.001 } },
+        };
+      },
+    },
+  };
+  assert.equal(await toolCall({ toolName: "bash", input: { command: "ls -la" } }, piContext), undefined);
+  assert.equal(piCalls, 1);
+  await commandHandler!("test pwd", piContext);
+  assert.equal(piCalls, 2, "manual checks use the selected backend too");
+  const piLog = readFileSync(join(configDir, "decisions.jsonl"), "utf8");
+  assert.match(piLog, /openrouter\/typesafe\/jev-1.14/);
+  assert.match(piLog, /"input_tokens":20/);
+
+  providerFails = true;
+  const failed = await toolCall({ toolName: "bash", input: { command: "pwd" } }, piContext);
+  assert.equal(failed?.block, true);
+  assert.match(failed?.reason ?? "", /check unavailable/);
+  assert.ok(!failed?.reason?.includes("private-provider-error"));
+  assert.equal(stub.captured.length, 2, "Pi errors never fall back to direct HTTP");
+
+  writeConfig({ backend: "pi", model: "openrouter/typesafe/jev-1.14", failMode: "open" });
+  assert.equal(await toolCall({ toolName: "bash", input: { command: "pwd" } }, piContext), undefined);
+  findModel = false;
+  writeConfig({ backend: "pi", model: "openrouter/typesafe/jev-1.14", failMode: "closed", debug: true });
+  assert.equal((await toolCall({ toolName: "bash", input: { command: "missing-model" } }, piContext))?.block, true);
+  assert.equal((await toolCall({ toolName: "bash", input: { command: "old-host" } }, ctx))?.block, true);
+  writeConfig({ backend: "pi", model: "bad-selector", failMode: "closed" });
+  assert.equal((await toolCall({ toolName: "bash", input: { command: "bad-selector" } }, piContext))?.block, true);
+  assert.equal(stub.captured.length, 2);
+
 });

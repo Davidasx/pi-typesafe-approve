@@ -21,6 +21,7 @@ export const LOG_FILE_NAME = "decisions.jsonl";
 
 export const DEFAULT_CONFIG: ApproveConfig = {
   enabled: true,
+  backend: "direct",
 
   endpoint: "",
   model: "",
@@ -122,6 +123,7 @@ function normalize(raw: Record<string, unknown>): ApproveConfig {
   const thresholds = isRecord(raw.thresholds) ? raw.thresholds : {};
   return {
     enabled: bool(raw.enabled, d.enabled),
+    backend: oneOf(raw.backend, ["direct", "pi"], d.backend),
     endpoint: str(raw.endpoint, d.endpoint),
     model: str(raw.model, d.model),
     apiKey: str(raw.apiKey, d.apiKey),
@@ -140,7 +142,7 @@ function normalize(raw: Record<string, unknown>): ApproveConfig {
 
 function collectProblems(raw: Record<string, unknown>): string[] {
   const problems: string[] = [];
-  const expect = (
+  const checkField = (
     key: string,
     predicate: (value: unknown) => boolean,
     description: string,
@@ -152,10 +154,10 @@ function collectProblems(raw: Record<string, unknown>): string[] {
   const isBool = (v: unknown): boolean => typeof v === "boolean";
   const isString = (v: unknown): boolean => typeof v === "string";
   const isNumber = (v: unknown): boolean => typeof v === "number" && Number.isFinite(v);
-  const isArray = (v: unknown): boolean => Array.isArray(v);
 
-  expect("enabled", isBool, "must be a boolean");
-  expect("endpoint", isString, "must be a string");
+  checkField("enabled", isBool, "must be a boolean");
+  checkField("backend", (v) => v === "direct" || v === "pi", 'must be "direct" or "pi"');
+  checkField("endpoint", isString, "must be a string");
   // Named explicitly rather than left to the generic "unknown key" silence: a
   // config carried over from the split keys would otherwise leave the gate inert
   // with nothing to explain it.
@@ -164,22 +166,22 @@ function collectProblems(raw: Record<string, unknown>): string[] {
       problems.push(`"${merged}" is no longer used; put the whole URL in "endpoint" (e.g. "https://api.typesafe.ai/v1/systemone")`);
     }
   }
-  expect("model", isString, "must be a string");
-  expect("apiKey", isString, "must be a string");
-  expect("headers", isRecord, "must be an object of string values");
-  expect("timeoutMs", isNumber, "must be a number");
-  expect("cacheSize", isNumber, "must be a number");
-  expect("thresholds", isRecord, "must be an object");
-  expect("action", (v) => isString(v) && ["escalate", "monitor", "block"].includes(v as string), 'must be "escalate", "monitor", or "block"');
-  expect("noUiFallback", (v) => isString(v) && ["block", "allow"].includes(v as string), 'must be "block" or "allow"');
-  expect(
+  checkField("model", isString, "must be a string");
+  checkField("apiKey", isString, "must be a string");
+  checkField("headers", isRecord, "must be an object of string values");
+  checkField("timeoutMs", isNumber, "must be a number");
+  checkField("cacheSize", isNumber, "must be a number");
+  checkField("thresholds", isRecord, "must be an object");
+  checkField("action", (v) => isString(v) && ["escalate", "monitor", "block"].includes(v as string), 'must be "escalate", "monitor", or "block"');
+  checkField("noUiFallback", (v) => isString(v) && ["block", "allow"].includes(v as string), 'must be "block" or "allow"');
+  checkField(
     "promptTimeoutSeconds",
     (v) => typeof v === "number" && Number.isFinite(v) && v >= 0,
     "must be a number of seconds, 0 or more (0 waits indefinitely)",
   );
-  expect("failMode", (v) => isString(v) && ["open", "closed"].includes(v as string), 'must be "open" or "closed"');
-  expect("logDecisions", isBool, "must be a boolean");
-  expect("debug", isBool, "must be a boolean");
+  checkField("failMode", (v) => isString(v) && ["open", "closed"].includes(v as string), 'must be "open" or "closed"');
+  checkField("logDecisions", isBool, "must be a boolean");
+  checkField("debug", isBool, "must be a boolean");
 
   if (isRecord(raw.thresholds)) {
     for (const key of ["violation"] as const) {
@@ -207,7 +209,7 @@ export function saveConfig(path: string, config: ApproveConfig): void {
  * and **anything else is a literal**, `$` included. There is exactly one
  * syntax, in exactly one place, and no second guessing.
  *
- * So `apiKey: "$TYPESAFE_API_KEY"` is taken at face value and sent as a literal
+ * A bare dollar-name reference is taken at face value and sent as a literal
  * bearer token. That is the correct reading of a rule the docs and the config
  * comment both state plainly: if a value begins with `$` and is not `${NAME}`,
  * the user meant a literal. {@link apiKeyBareReferenceWarning} exists only to
@@ -302,7 +304,7 @@ export function shouldAdoptConfig(input: {
   return {
     adopt: false,
     reason:
-      "it parses but leaves the endpoint, model, or API key unusable, so the working configuration is kept",
+      "it parses but leaves the selected backend unconfigured, so the working configuration is kept",
   };
 }
 
@@ -313,6 +315,31 @@ export function resolveEndpoint(config: ApproveConfig): string {
     throw new Error('no endpoint configured: set "endpoint" to the full request URL, e.g. "https://api.typesafe.ai/v1/systemone"');
   }
   return endpoint;
+}
+
+/** Exact Pi classifier identity. Only the first slash separates provider and ID. */
+export function parsePiModel(value: string): { provider: string; modelId: string } {
+  const selector = value.trim();
+  const slash = selector.indexOf("/");
+  const provider = selector.slice(0, slash);
+  const modelId = selector.slice(slash + 1);
+  if (slash <= 0 || !modelId || /\s/u.test(selector) || modelId.startsWith("/")) {
+    throw new Error('Pi model must be "provider/modelId", e.g. "openrouter/typesafe/jev-1.14"');
+  }
+  return { provider, modelId };
+}
+
+/** Local configuration only; Pi lookup/auth failures must reach failMode, not disable the gate. */
+export function isConfigured(config: ApproveConfig): boolean {
+  if (config.backend === "pi") return config.model.trim().length > 0;
+  if (!config.model.trim() || !resolveApiKey(config.apiKey).ok) return false;
+  return config.endpoint.trim().length > 0;
+}
+
+export function configurationHint(config: ApproveConfig): string {
+  return config.backend === "pi"
+    ? 'set the Pi model to "provider/modelId"; Pi supplies the connection and credentials'
+    : "set the endpoint, model, and API key";
 }
 
 // ── primitive coercion ────────────────────────────────────────────────────

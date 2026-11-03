@@ -92,6 +92,8 @@ export interface GateUi {
   notify(message: string, kind?: "info" | "warning" | "error"): void;
   /** The active turn's abort signal, when there is one. */
   signal?: AbortSignal;
+  /** The current host registry, passed per call rather than stored across sessions. */
+  modelRegistry?: unknown;
 }
 
 export interface GateDeps {
@@ -112,6 +114,7 @@ export interface GateDeps {
     request: { state: StructuredValue; questions: Record<string, JevQuestion> },
     signal: AbortSignal | undefined,
     config: ApproveConfig,
+    modelRegistry?: unknown,
   ): Promise<SystemOneResponse>;
   logger: DecisionLogger;
   now?(): number;
@@ -202,7 +205,7 @@ export function createGate(deps: GateDeps) {
     let response: SystemOneResponse;
     try {
       deps.logger.debug("gate.request", { cacheKey });
-      response = await deps.ask({ state, questions }, ui.signal, config);
+      response = await deps.ask({ state, questions }, ui.signal, config, ui.modelRegistry);
     } catch (error) {
       const degraded = error instanceof SystemOneError && error.kind === "timeout" ? "timeout" : "error";
       const reason = error instanceof Error ? error.message : String(error);
@@ -369,7 +372,8 @@ function hashRequest(config: ApproveConfig, state: StructuredValue, policy: Poli
   // legitimately answer the same state differently, and so are the categories:
   // editing the policy changes the answer to an unchanged command.
   const material = JSON.stringify({
-    endpoint: config.endpoint,
+    backend: config.backend,
+    endpoint: config.backend === "pi" ? undefined : config.endpoint,
     model: config.model,
     state,
     categories: policy.categories,

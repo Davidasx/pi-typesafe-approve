@@ -12,7 +12,7 @@ A System One model does not write text. It answers typed questions about a state
 - anything it flags stops and asks you — including obfuscated commands it can decode (`$'\x72\x6d' -rf /`, `echo … | base64 -d | sh`);
 - an unreachable model never wedges the agent.
 
-Endpoints, keys, and models are yours to supply. There are no provider presets.
+Choose direct HTTP with your own endpoint/key, or reuse Pi's configured providers with one exact classifier ID. Neither backend falls back to the other.
 
 ## Install
 
@@ -20,13 +20,38 @@ Endpoints, keys, and models are yours to supply. There are no provider presets.
 pi install git:github.com/Davidasx/pi-typesafe-approve
 ```
 
-Then `/typesafe-approve` to set the endpoint, model, and key. For development, `pi -e ./` runs a checkout for one invocation, and `pi install ./path` loads it in place so an edit is live after `/reload`.
+Then `/typesafe-approve` to choose the backend and model (plus endpoint/key for direct HTTP). For development, `pi -e ./` runs a checkout for one invocation, and `pi install ./path` loads it in place so an edit is live after `/reload`.
 
 ## Configure
 
 Config is `<agentDir>/extensions/pi-typesafe-approve/config.json`, every key optional, all of it editable from `/typesafe-approve`. See [`config.example.json`](./config.example.json).
 
-### Endpoint and model
+### Backend
+
+`backend` is `direct` (the default, also for existing configs) or `pi`.
+
+- **direct**: the plugin calls your `endpoint` using the upstream `model`, `apiKey`, and optional `headers`.
+- **pi**: the plugin calls Pi's classifier API using Pi's endpoint, credentials, and headers. Requires Pi 0.99.0 or newer with classifier support. No codemode or `/model` selection is needed.
+
+For example, this selects TypeSafe's official channel:
+
+```json
+{ "backend": "pi", "model": "typesafe/jev-latest" }
+```
+
+Or select OpenRouter explicitly:
+
+```json
+{ "backend": "pi", "model": "openrouter/typesafe/jev-1.14" }
+```
+
+The first `/` separates the **Pi provider ID** from the **complete model ID**; later slashes stay in the model ID. `openrouter/~typesafe/jev-latest` is another example. Selection is exact, independent of the current chat model. `latest` aliases can still change upstream.
+
+In Pi mode, the plugin's `endpoint`, `apiKey`, and `headers` are ignored; endpoint/key rows disappear immediately when switching the backend in Settings and reappear when switching back. Stored direct values are retained. The model field is shared, so update it to the format required by the selected backend.
+
+There is no automatic model or backend fallback. Unknown models, malformed non-empty Pi selectors, missing credentials, an unsupported Pi API, timeouts, and provider errors follow the existing `failMode` behavior. Provider error bodies are not displayed by the plugin. An empty model leaves the gate unconfigured, as before.
+
+### Endpoint and model (direct only)
 
 Two strings. `endpoint` is the whole request URL.
 
@@ -38,7 +63,7 @@ Two strings. `endpoint` is the whole request URL.
 
 The request and response bodies are the same on all of them, so only these two strings change. Verified against OpenRouter with `inception/mercury-decide:free`, which also works when your OpenRouter balance is zero.
 
-### API key
+### API key (direct only)
 
 A literal, or `${NAME}` to read the environment:
 
@@ -140,7 +165,7 @@ Only the braced form expands. `$NAME`, `$HOME`, and `~` stay exactly as written,
 | `/typesafe-approve on` / `off` | Toggle the gate |
 | `/typesafe-approve path` | Config path |
 
-The settings screen shows every option with its current value in one list; enums change in place, everything else opens a one-field editor.
+The settings screen shows the selected backend's options with their current values in one list; enums change in place, everything else opens a one-field editor. Backend changes refresh the visible fields immediately.
 
 Changes apply by themselves. `policy.json` is read per command and never cached, so an edit is live at the next command. `config.json` is re-read when it changes, guarded so that a half-written file cannot silently disarm the check.
 
@@ -151,7 +176,7 @@ bash tool call
       │
       ├─ not bash / gate off / not configured ─────────────────► pass through
       ├─ cache hit ────────────────────────────────────────────► replay verdict
-      ├─ POST {model, state, questions} ───────────────────────► sum, compare, act
+      ├─ direct HTTP / Pi classifier API ─────────────────────► sum, compare, act
       └─ network failure ──────────────────────────────────────► failMode
 ```
 
@@ -170,7 +195,7 @@ Decisions are appended to `decisions.jsonl` beside the config, mode `0600`, capp
 ## Tests
 
 ```bash
-npm test        # 125 tests, including an end-to-end run against a local stub
+npm test        # unit tests and integration tests using local stubs
 npm run check   # typecheck too
 ```
 

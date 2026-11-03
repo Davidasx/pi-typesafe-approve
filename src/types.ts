@@ -184,7 +184,10 @@ export interface Decision {
 export interface ApproveConfig {
   enabled: boolean;
 
-  // ---- Endpoint (no presets: the URL is user-supplied) ----
+  /** Missing in older config files means direct HTTP, preserving existing setups. */
+  backend: "direct" | "pi";
+
+  // ---- Direct HTTP connection (ignored by the Pi backend) ----
   /**
    * The full request URL, e.g. `https://api.typesafe.ai/v1/systemone`.
    *
@@ -193,9 +196,9 @@ export interface ApproveConfig {
    * precedence rule to remember.
    */
   endpoint: string;
-  /** Model identifier, e.g. `jev-latest`, `~typesafe/jev-latest`, `typesafe/jev-1.13`. */
+  /** Direct: upstream model ID. Pi: `provider/modelId`, split at the first slash. */
   model: string;
-  /** Literal key or an environment reference such as `$TYPESAFE_API_KEY`. */
+  /** Direct only: literal key or an environment reference such as `${TYPESAFE_API_KEY}`. */
   apiKey: string;
   /** Extra request headers (for gateways that need them). */
   headers: Record<string, string>;

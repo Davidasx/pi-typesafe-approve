@@ -7,6 +7,8 @@ import {
   DEFAULT_CONFIG,
   configPath,
   loadConfig,
+  isConfigured,
+  parsePiModel,
   resolveApiKey,
   resolveEndpoint,
   saveConfig,
@@ -125,6 +127,27 @@ test("saveConfig round-trips and creates the directory with owner-only permissio
   assert.equal(reloaded.config.endpoint, "https://a.test/v1/systemone");
   assert.equal(reloaded.config.model, "jev-latest");
   assert.ok(readFileSync(file, "utf8").endsWith("\n"));
+});
+
+test("backend defaults to direct for old configurations and accepts pi", () => {
+  assert.equal(validateConfig({ model: "jev-latest" }).config.backend, "direct");
+  assert.equal(validateConfig({ backend: "pi" }).config.backend, "pi");
+  assert.deepEqual(validateConfig({ backend: "other" }).problems, ['"backend" must be "direct" or "pi"']);
+});
+
+test("Pi model selectors split at only the first slash", () => {
+  assert.deepEqual(parsePiModel(" typesafe/jev-latest "), { provider: "typesafe", modelId: "jev-latest" });
+  assert.deepEqual(parsePiModel("openrouter/~typesafe/jev-latest"), { provider: "openrouter", modelId: "~typesafe/jev-latest" });
+  for (const value of ["", "jev-latest", "/jev", "typesafe/", "typesafe//jev", "type safe/jev", "typesafe/ jev"]) {
+    assert.throws(() => parsePiModel(value), /provider\/modelId/);
+  }
+});
+
+test("Pi configuration ignores direct fields and leaves lookup failures to failMode", () => {
+  assert.equal(isConfigured({ ...DEFAULT_CONFIG, backend: "pi", model: "typesafe/jev-latest" }), true);
+  assert.equal(isConfigured({ ...DEFAULT_CONFIG, backend: "pi", model: "bad-selector" }), true);
+  assert.equal(isConfigured({ ...DEFAULT_CONFIG, backend: "pi" }), false);
+  assert.equal(isConfigured({ ...DEFAULT_CONFIG, model: "jev-latest" }), false);
 });
 
 // ── adopting a config that changed on disk ─────────────────────────────────

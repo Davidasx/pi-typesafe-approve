@@ -18,10 +18,10 @@ import { getAgentDir } from "@earendil-works/pi-coding-agent";
 import { readFileSync, statSync, writeFileSync } from "node:fs";
 import { buildQuestions, buildState, decide, negativeSet } from "./classify.ts";
 import {
-  apiKeyBareReferenceWarning,
-  apiKeyEnvReferences,
   configDir,
   configPath,
+  configurationHint,
+  isConfigured,
   loadConfig,
   logPath,
   resolveApiKey,
@@ -29,7 +29,8 @@ import {
   saveConfig,
   shouldAdoptConfig,
 } from "./config.ts";
-import { createApproveMenu, type ApproveMenuState } from "./menu.ts";
+import { createApproveMenu, endpointLine, describeKey, type ApproveMenuState } from "./menu.ts";
+import { askPi } from "./pi-backend.ts";
 import { runMenu } from "@narumitw/pi-tui-kit";
 import { createGate, type GateUi } from "./gate.ts";
 import { createFileLogger, trimLogFile, type DecisionLogger } from "./log.ts";
@@ -41,7 +42,7 @@ import {
   type LoadedPolicy,
 } from "./policy.ts";
 import { createSystemOneClient, redact, type SystemOneClient } from "./systemone.ts";
-import type { ApproveConfig, LoadedConfig } from "./types.ts";
+import type { ApproveConfig, JevQuestion, LoadedConfig, StructuredValue, SystemOneResponse } from "./types.ts";
 
 export default function typesafeApproveExtension(pi: ExtensionAPI): void {
   const agentDir = getAgentDir();
@@ -152,6 +153,17 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     return client;
   }
 
+  function ask(
+    request: { state: StructuredValue; questions: Record<string, JevQuestion> },
+    signal: AbortSignal | undefined,
+    config: ApproveConfig,
+    modelRegistry?: unknown,
+  ): Promise<SystemOneResponse> {
+    return config.backend === "pi"
+      ? askPi(modelRegistry, config.model, request, { timeoutMs: config.timeoutMs, signal })
+      : getClient(config).ask(request, { signal });
+  }
+
   const menuState = (): ApproveMenuState => {
     const config = getConfig();
     return {
@@ -172,25 +184,23 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     update: (patch: Partial<ApproveConfig>) => persist({ ...getConfig(), ...patch }),
     writePolicy: writePolicyFile,
     restoreDefaultPolicy: () => writePolicyFile(serializePolicy(BUILT_IN_CATEGORIES)),
-    connectionReport: () => connectionReport(),
     readPolicyText: () => readFileSync(policyPath(policyContext), "utf8"),
   };
 
   /** One line describing whether the endpoint answers. Shared with the menu. */
-  async function connectionReport(): Promise<string> {
+  async function connectionReport(ctx: ExtensionCommandContext): Promise<string> {
     const config = getConfig();
     if (!isConfigured(config)) {
-      return "pi-typesafe-approve: endpoint, model, and API key must all be set.";
+      return `pi-typesafe-approve: ${configurationHint(config)}.`;
     }
     try {
-      const client = getClient(config);
       const started = Date.now();
       const loaded = readPolicy();
       const policy = { categories: loaded.categories, state: loaded.state };
-      const response = await client.ask({
+      const response = await ask({
         state: buildState("ls -la", sessionCwd, loaded.state, process.env),
         questions: buildQuestions(policy),
-      });
+      }, ctx.signal, config, ctx.modelRegistry);
       return `pi-typesafe-approve: ${response.model ?? config.model} answered OK in ${Date.now() - started} ms (${summarizeUsage(response.usage)}).`;
     } catch (error) {
       return `pi-typesafe-approve: ${redact(message(error), resolveApiKeySafe(config))}`;
@@ -206,7 +216,7 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     env: () => process.env,
     getCwd: () => sessionCwd,
     isConfigured,
-    ask: (request, signal, config) => getClient(config).ask(request, signal ? { signal } : {}),
+    ask,
     logger,
   });
 
@@ -229,7 +239,7 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
     }
     if (loaded.config.enabled && !isConfigured(loaded.config)) {
       ctx.ui.notify(
-        "pi-typesafe-approve: not configured yet — run /typesafe-approve to set the endpoint, model, and API key.",
+        `pi-typesafe-approve: not configured yet — run /typesafe-approve to ${configurationHint(loaded.config)}.`,
         "info",
       );
     }
@@ -262,14 +272,14 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
       if (trimmed.startsWith("test")) {
         await runManualTest(trimmed.replace(/^test\s*/u, "").trim(), ctx, {
           getConfig,
-          getClient,
+          ask,
           cwd: () => sessionCwd,
           policy: () => readPolicy(),
         });
         return;
       }
 
-      await runMenu(ctx, createApproveMenu(menuDeps), {
+      await runMenu(ctx, createApproveMenu({ ...menuDeps, connectionReport: () => connectionReport(ctx) }), {
         getState: menuState,
         onUnsupportedMode: (unsupported, mode) =>
           unsupported.ui.notify(
@@ -283,35 +293,17 @@ export default function typesafeApproveExtension(pi: ExtensionAPI): void {
 
 // ── command flows ──────────────────────────────────────────────────────────
 
-/** One line describing the endpoint, for status output and for the menu. */
-function endpointLine(config: ApproveConfig): string {
-  let endpoint = "(no endpoint configured)";
-  try {
-    endpoint = resolveEndpoint(config);
-  } catch {
-    // Keep the placeholder.
-  }
-  return `${endpoint} · model ${config.model || "(unset)"}`;
-}
-
 function statusLine(config: ApproveConfig, policy: LoadedPolicy, configFile: string): string {
-  const keyEnv = apiKeyEnvReferences(config.apiKey);
   return [
     `enabled=${config.enabled}`,
     endpointLine(config),
-    `key=${describeKey(config.apiKey, keyEnv)}`,
+    `backend=${config.backend}`,
+    config.backend === "pi" ? "credentials=Pi" : `key=${describeKey(config.apiKey)}`,
     `violation>=${config.thresholds.violation}`,
     `action=${config.action} noUiFallback=${config.noUiFallback} failMode=${config.failMode}`,
     `policy=${policy.path} (${policy.categories.length} categories: ${policy.categories.filter((c) => c.polarity === "negative").length} stop, ${policy.categories.filter((c) => c.polarity === "positive").length} allow)${policy.created ? " (created)" : ""}${policy.fallback ? " (built-in default)" : ""}`,
     `config=${configFile}`,
   ].join(" · ");
-}
-
-function describeKey(apiKey: string, envReferences: readonly string[]): string {
-  if (!apiKey) return "(unset)";
-  if (envReferences.length > 0) return `\${${envReferences[0]}}`;
-  const warning = apiKeyBareReferenceWarning(apiKey);
-  return warning ? `literal (! ${warning})` : "literal";
 }
 
 /** Print the categories the model chooses between, as they are actually sent. */
@@ -336,7 +328,12 @@ async function runManualTest(
   ctx: ExtensionCommandContext,
   deps: {
     getConfig(): ApproveConfig;
-    getClient(config: ApproveConfig): SystemOneClient;
+    ask(
+      request: { state: StructuredValue; questions: Record<string, JevQuestion> },
+      signal: AbortSignal | undefined,
+      config: ApproveConfig,
+      modelRegistry?: unknown,
+    ): Promise<SystemOneResponse>;
     cwd(): string;
     policy(): LoadedPolicy;
   },
@@ -347,16 +344,16 @@ async function runManualTest(
   }
   const config = deps.getConfig();
   if (!isConfigured(config)) {
-    ctx.ui.notify("pi-typesafe-approve: endpoint, model, and API key must all be set.", "error");
+    ctx.ui.notify(`pi-typesafe-approve: ${configurationHint(config)}.`, "error");
     return;
   }
   try {
     const loaded = deps.policy();
     const policy = { categories: loaded.categories, state: loaded.state };
-    const response = await deps.getClient(config).ask({
+    const response = await deps.ask({
       state: buildState(command, deps.cwd(), loaded.state, process.env),
       questions: buildQuestions(policy),
-    });
+    }, ctx.signal, config, ctx.modelRegistry);
     const decision = decide(response, config, negativeSet(policy));
     ctx.ui.notify(
       `pi-typesafe-approve: ${decision.verdict} ${JSON.stringify(decision.signals)}` +
@@ -373,22 +370,12 @@ async function runManualTest(
 function toGateUi(ctx: ExtensionContext): GateUi {
   return {
     hasUI: ctx.hasUI,
+    modelRegistry: ctx.modelRegistry,
     confirm: (title, message, timeoutMs) =>
       ctx.ui.confirm(title, message, timeoutMs === undefined ? {} : { timeout: timeoutMs }),
     notify: (message, kind) => ctx.ui.notify(message, kind),
     ...(ctx.signal ? { signal: ctx.signal } : {}),
   };
-}
-
-function isConfigured(config: ApproveConfig): boolean {
-  if (!config.model.trim()) return false;
-  if (!resolveApiKey(config.apiKey).ok) return false;
-  try {
-    resolveEndpoint(config);
-    return true;
-  } catch {
-    return false;
-  }
 }
 
 function summarizeUsage(usage: { input_tokens?: number; cost?: number } | undefined): string {
@@ -400,6 +387,7 @@ function summarizeUsage(usage: { input_tokens?: number; cost?: number } | undefi
 }
 
 function resolveApiKeySafe(config: ApproveConfig): string | undefined {
+  if (config.backend === "pi") return undefined;
   const resolved = resolveApiKey(config.apiKey);
   return resolved.ok ? resolved.key : undefined;
 }

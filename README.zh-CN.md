@@ -12,7 +12,7 @@ System One 模型不写文本。它针对你给的一份状态（state）回答�
 - 被判为有风险的一律停下来问你 —— 包括它能看穿的混淆写法（`$'\x72\x6d' -rf /`、`echo … | base64 -d | sh`）；
 - 模型不可达时，绝不会把 agent 卡死。
 
-端点、密钥、模型全部由你自己填，没有内置的服务商预设。
+可以自行填写端点与密钥直连，也可以用一个精确的决策模型标识复用 Pi 已有的渠道配置。两种 backend 不会相互回落。
 
 ## 安装
 
@@ -20,13 +20,38 @@ System One 模型不写文本。它针对你给的一份状态（state）回答�
 pi install git:github.com/Davidasx/pi-typesafe-approve
 ```
 
-然后 `/typesafe-approve` 设置端点、模型和密钥。开发时用 `pi -e ./` 单次运行一份检出，或 `pi install ./path` 就地加载，改完 `/reload` 即生效。
+然后 `/typesafe-approve` 选择 backend 和模型；直连模式还需设置端点和密钥。开发时用 `pi -e ./` 单次运行一份检出，或 `pi install ./path` 就地加载，改完 `/reload` 即生效。
 
 ## 配置
 
 配置文件在 `<agentDir>/extensions/pi-typesafe-approve/config.json`，所有键都可选，也都可以在 `/typesafe-approve` 里改。见 [`config.example.json`](./config.example.json)。
 
-### 端点与模型
+### 调用方式（backend）
+
+`backend` 为 `direct` 或 `pi`。省略时默认 `direct`，旧配置不受影响。
+
+- **direct**：插件用 `endpoint`、上游 `model`、`apiKey` 和可选 `headers` 自行发送 HTTP 请求。
+- **pi**：插件调用 Pi 的 classifier API，复用 Pi 的端点、凭据和请求头。需要支持该 API 的 Pi 0.99.0 或更新版本，无需启用 codemode，也不依赖 `/model` 的选择。
+
+指定 TypeSafe 官方渠道：
+
+```json
+{ "backend": "pi", "model": "typesafe/jev-latest" }
+```
+
+指定 OpenRouter 渠道：
+
+```json
+{ "backend": "pi", "model": "openrouter/typesafe/jev-1.14" }
+```
+
+只在第一个 `/` 处分割：前面是 **Pi provider ID**，后面的全部内容是 **完整 model ID**。例如 `openrouter/~typesafe/jev-latest` 也可使用。精确选择渠道与模型，不随当前聊天模型改变；但 `latest` 别名仍可能被上游更新。
+
+Pi 模式忽略插件的 `endpoint`、`apiKey` 和 `headers`。在设置界面切换 backend，端点与密钥配置项立即隐藏或恢复，原有直连值不会删除。模型字段共用，切换后需填入该模式对应的格式。
+
+不自动切换模型或 backend。模型不存在、非空 Pi 标识格式错误、缺少凭据、Pi API 不支持、超时或服务商报错，均按现有 `failMode` 处理。插件不展示服务商的原始错误体。模型为空时仍视为未配置，与原先行为一致。
+
+### 端点与模型（仅 direct）
 
 两个字符串。`endpoint` 就是完整的请求 URL。
 
@@ -38,7 +63,7 @@ pi install git:github.com/Davidasx/pi-typesafe-approve
 
 这三者的请求体与响应体完全一致，所以只有这两个字符串会变。OpenRouter 已用 `inception/mercury-decide:free` 实测通过，账户余额为零时也能用。
 
-### API 密钥
+### API 密钥（仅 direct）
 
 写字面值，或用 `${NAME}` 读环境变量：
 
@@ -140,7 +165,7 @@ pi install git:github.com/Davidasx/pi-typesafe-approve
 | `/typesafe-approve on` / `off` | 开关闸门 |
 | `/typesafe-approve path` | 配置路径 |
 
-设置界面把所有选项和当前值放在同一个列表里；枚举项就地切换，其余打开单字段编辑器。
+设置界面把当前 backend 的选项和当前值放在同一个列表里；枚举项就地切换，其余打开单字段编辑器。切换 backend 后立即刷新可见字段。
 
 改动自动生效。`policy.json` 每条命令读一次且从不缓存，所以改完下一条命令就生效。`config.json` 变化时重读，并且做了保护，半个写入的文件不会悄无声息地把检查关掉。
 
@@ -151,7 +176,7 @@ bash 工具调用
       │
       ├─ 非 bash / 闸门关闭 / 未配置 ───────────────────────────► 放行
       ├─ 命中缓存 ─────────────────────────────────────────────► 复用判定
-      ├─ POST {model, state, questions} ───────────────────────► 求和、比较、执行动作
+      ├─ direct HTTP / Pi classifier API ────────────────────► 求和、比较、执行动作
       └─ 网络失败 ─────────────────────────────────────────────► failMode
 ```
 
@@ -170,7 +195,7 @@ bash 工具调用
 ## 测试
 
 ```bash
-npm test        # 125 个测试，含一个针对本地 stub 的端到端用例
+npm test        # 单元测试，以及使用本地 stub 的集成测试
 npm run check   # 附带类型检查
 ```
 
